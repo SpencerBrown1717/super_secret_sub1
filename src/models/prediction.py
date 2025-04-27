@@ -2,263 +2,384 @@ import pandas as pd
 import math
 import numpy as np
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional, Union
+from functools import lru_cache
+from src.utils.geo_utils import (
+    haversine_distance,
+    calculate_bearing,
+    move_point,
+    clamp_to_china_coastal,
+)
+import random
 
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate distance between two lat/lon points in kilometers."""
-    R = 6371.0  # Earth radius in km
-    
-    # Convert to radians
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    
-    a = (math.sin(dlat/2)**2 + 
-         math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    
-    return R * c
+# Earth's radius in kilometers (for distance/bearing calculations)
+EARTH_RADIUS_KM = 6371.0
 
-def predict_path_with_uncertainty(
-    lat: float, 
-    lon: float, 
-    start_time: datetime,
-    speed_knots: float = 8.0, 
-    heading_deg: float = 90, 
-    total_hours: int = 72, 
-    interval: int = 12
-) -> List[Dict[str, Any]]:
-    """
-    Predict submarine positions up to total_hours into the future, with uncertainty radii.
-    Returns a list of dicts: [{time: ..., lat: ..., lon: ..., radius_km: ...}, ...]
-    """
-    results = []
-    
-    # Convert speed from knots to km per hour (1 knot ~ 1.852 km/h)
-    speed_kmh = speed_knots * 1.852
-    
-    # Convert heading to radians for movement calculation
-    heading_rad = math.radians(heading_deg)
-    
-    # Earth radius (for rough degree calculations)
-    R = 6371.0  # km
-    
-    # Starting point
-    current_lat = math.radians(lat)
-    current_lon = math.radians(lon)
-    current_time = start_time
-    
-    # Add initial position with zero uncertainty
-    results.append({
-        "time": current_time,
-        "lat": lat,
-        "lon": lon,
-        "radius_km": 0
-    })
-    
-    for h in range(interval, total_hours+1, interval):
-        # Simple dead-reckoning: distance = speed * time
-        distance = speed_kmh * h  # km traveled in h hours (assuming constant speed)
-        
-        # Calculate new lat/lon using basic equirectangular approximation
-        delta = distance / R  # angular distance in radians
-        
-        new_lat = math.asin(math.sin(current_lat) * math.cos(delta) + 
-                           math.cos(current_lat) * math.sin(delta) * math.cos(heading_rad))
-        
-        new_lon = current_lon + math.atan2(math.sin(heading_rad) * math.sin(delta) * math.cos(current_lat),
-                                          math.cos(delta) - math.sin(current_lat) * math.sin(new_lat))
-        
-        # Convert back to degrees
-        new_lat_deg = math.degrees(new_lat)
-        new_lon_deg = math.degrees(new_lon)
-        
-        # Increase uncertainty radius over time (10 km for every 12h as a simple rule)
-        # In reality, this would be based on submarine capabilities and intelligence
-        radius_km = 10 * (h / interval)  
-        
-        # Add to results
-        results.append({
-            "time": current_time + pd.Timedelta(hours=h),
-            "lat": new_lat_deg,
-            "lon": new_lon_deg,
-            "radius_km": radius_km
-        })
-    
-    return results
+# Speed limits for submarines (in knots)
+MIN_SPEED_KNOTS = 5.0  # Minimum patrol speed
+MAX_SPEED_KNOTS = 10.0  # Maximum patrol speed
+KNOTS_TO_KMH = 1.852  # Conversion factor from knots to km/h
 
-def simulate_random_path(lat: float, lon: float, start_time, 
-                       speed_range=(5, 12), total_hours=72, interval=6):
+def forecast_path(
+    history: List[Dict[str, Any]],
+    hours_ahead: int = 24,
+    step_hours: int = 1,
+    heading_variation: float = 15.0,
+) -> Dict[str, Any]:
+    """Forecast a future path for a submarine given its historical positions.
+    
+    Parameters
+    ----------
+    history : List[Dict[str, Any]]
+        List of historical position records, each containing at least 'latitude' and 'longitude'.
+        Optional 'timestamp' field for speed calculation.
+    hours_ahead : int, default 24
+        Number of hours to forecast into the future.
+    step_hours : int, default 1
+        Time step between forecast points in hours.
+    heading_variation : float, default 15.0
+        Maximum variation in degrees from the base heading for uncertainty paths.
+        
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - central_path: List of [lon, lat] points for the most likely path
+        - left_path: List of [lon, lat] points for the left uncertainty boundary
+        - right_path: List of [lon, lat] points for the right uncertainty boundary
+        - forecast_times: List of hours from start for each point
+        - cone_polygon: List of [lon, lat] points forming the uncertainty cone polygon
+        
+    Raises
+    ------
+    ValueError
+        If step_hours is not positive or hours_ahead is negative.
     """
-    Simulate a random path by jittering speed and heading.
-    Returns a list of positions at each time step.
-    This is for Monte Carlo simulation to generate multiple possible paths.
-    """
-    results = []
-    
-    # Earth radius in km
-    R = 6371.0
-    
-    # Starting position
-    current_lat = lat
-    current_lon = lon
-    current_time = start_time
-    
-    # Initial random heading and speed
-    current_heading = np.random.uniform(0, 360)
-    current_speed = np.random.uniform(speed_range[0], speed_range[1])
-    
-    # Add initial position
-    results.append({
-        "time": current_time,
-        "lat": current_lat,
-        "lon": current_lon
-    })
-    
-    # Simulate movement
-    for h in range(interval, total_hours+1, interval):
-        # Randomly change heading every few intervals
-        if h % 12 == 0:
-            current_heading += np.random.uniform(-30, 30)  # change course ±30°
-            current_speed = np.random.uniform(speed_range[0], speed_range[1])  # vary speed
+    if step_hours <= 0:
+        raise ValueError("step_hours must be positive")
+    if hours_ahead < 0:
+        raise ValueError("hours_ahead must be non-negative")
         
-        # Convert to radians
-        lat1 = math.radians(current_lat)
-        lon1 = math.radians(current_lon)
-        brng = math.radians(current_heading)
-        
-        # Calculate distance moved during this interval
-        dist = current_speed * 1.852 * interval  # km
-        
-        # Calculate new position
-        lat2 = math.asin(math.sin(lat1) * math.cos(dist/R) +
-                         math.cos(lat1) * math.sin(dist/R) * math.cos(brng))
-        
-        lon2 = lon1 + math.atan2(math.sin(brng) * math.sin(dist/R) * math.cos(lat1),
-                                 math.cos(dist/R) - math.sin(lat1) * math.sin(lat2))
-        
-        # Update current position
-        current_lat = math.degrees(lat2)
-        current_lon = math.degrees(lon2)
-        current_time = start_time + pd.Timedelta(hours=h)
-        
-        # Add to results
-        results.append({
-            "time": current_time,
-            "lat": current_lat,
-            "lon": current_lon
-        })
-    
-    return results
+    if not history or len(history) < 2:
+        # Not enough data to compute heading/speed, return minimal info
+        if history and "latitude" in history[-1] and "longitude" in history[-1]:
+            init_lat = history[-1]["latitude"]
+            init_lon = history[-1]["longitude"]
+        else:
+            return {}
 
-def generate_monte_carlo_uncertainty(lat: float, lon: float, start_time,
-                                   num_simulations=100, total_hours=72, interval=6):
+        # Only current position available, so no movement forecast
+        central_path = [[init_lon, init_lat]]
+        left_path = [[init_lon, init_lat]]
+        right_path = [[init_lon, init_lat]]
+        forecast_times = [0]
+        cone_polygon = None
+
+        return {
+            "central_path": central_path,
+            "left_path": left_path,
+            "right_path": right_path,
+            "forecast_times": forecast_times,
+            "cone_polygon": cone_polygon,
+        }
+
+    # Use the last two known points to estimate speed and bearing
+    last_point = history[-1]
+    prev_point = history[-2]
+    lat1, lon1 = prev_point["latitude"], prev_point["longitude"]
+    lat2, lon2 = last_point["latitude"], last_point["longitude"]
+
+    # Calculate time difference in hours (if timestamps present)
+    if "timestamp" in last_point and "timestamp" in prev_point:
+        td = last_point["timestamp"] - prev_point["timestamp"]
+        time_diff_hours = td.total_seconds() / 3600.0 if td.total_seconds() > 0 else 1.0
+    else:
+        time_diff_hours = 1.0
+
+    # Compute speed (km/h)
+    distance_km = haversine_distance(lat1, lon1, lat2, lon2)
+    speed_kmh = distance_km / time_diff_hours if time_diff_hours > 0 else 0.0
+
+    # Convert to knots and clamp to realistic submarine speeds
+    speed_knots = max(MIN_SPEED_KNOTS, min(MAX_SPEED_KNOTS, speed_kmh / KNOTS_TO_KMH))
+    speed_kmh = speed_knots * KNOTS_TO_KMH
+
+    # Compute base bearing
+    bearing_deg = calculate_bearing(lat1, lon1, lat2, lon2)
+
+    # Define bearings for left and right uncertainty paths
+    bearing_left = (bearing_deg + heading_variation) % 360
+    bearing_right = (bearing_deg - heading_variation + 360) % 360
+
+    # Determine number of forecast steps
+    steps = max(1, math.ceil(hours_ahead / step_hours))
+
+    # Initialize paths with current position
+    init_lat, init_lon = lat2, lon2
+    central_path = [[init_lon, init_lat]]
+    left_path = [[init_lon, init_lat]]
+    right_path = [[init_lon, init_lat]]
+    forecast_times = [0]
+
+    # Simulate forward for each step
+    for step in range(1, steps + 1):
+        # Distance traveled in this step (km)
+        distance = speed_kmh * step_hours
+
+        # Move points along each bearing
+        new_lat, new_lon = move_point(init_lat, init_lon, bearing_deg, distance)
+        new_lat_L, new_lon_L = move_point(init_lat, init_lon, bearing_left, distance)
+        new_lat_R, new_lon_R = move_point(init_lat, init_lon, bearing_right, distance)
+
+        # Append new points to paths
+        central_path.append([new_lon, new_lat])
+        left_path.append([new_lon_L, new_lat_L])
+        right_path.append([new_lon_R, new_lat_R])
+
+        # Advance the reference point for next iteration
+        init_lat, init_lon = new_lat, new_lon
+        forecast_times.append(step * step_hours)
+
+    # Build the uncertainty cone polygon
+    cone_polygon = right_path + left_path[::-1]
+    if cone_polygon and cone_polygon[0] != cone_polygon[-1]:
+        cone_polygon.append(cone_polygon[0])
+
+    return {
+        "central_path": central_path,
+        "left_path": left_path,
+        "right_path": right_path,
+        "forecast_times": forecast_times,
+        "cone_polygon": cone_polygon,
+    }
+
+def forecast_all_subs(
+    data: Union[List[Dict[str, Any]], pd.DataFrame],
+    hours_ahead: int = 24,
+    step_hours: int = 1,
+    heading_variation: float = 15.0,
+) -> Dict[Any, Dict[str, Any]]:
+    """Generate forecasts for multiple submarines.
+    
+    Parameters
+    ----------
+    data : Union[List[Dict[str, Any]], pd.DataFrame]
+        List of submarine position records or a pandas DataFrame.
+        Each record should contain at least 'latitude' and 'longitude'.
+        Must have an identifier field ('id', 'submarine_id', or 'name').
+    hours_ahead : int, default 24
+        Number of hours to forecast into the future.
+    step_hours : int, default 1
+        Time step between forecast points in hours.
+    heading_variation : float, default 15.0
+        Maximum variation in degrees from the base heading for uncertainty paths.
+        
+    Returns
+    -------
+    Dict[Any, Dict[str, Any]]
+        Dictionary mapping submarine IDs to their forecast paths.
+        Each forecast follows the same structure as forecast_path().
+        
+    Raises
+    ------
+    ValueError
+        If data cannot be converted to a list of dictionaries.
     """
-    Generate uncertainty cone using Monte Carlo simulation.
-    For each time step, calculates a radius that encompasses most simulated positions.
-    Returns a format similar to predict_path_with_uncertainty.
+    # Accept either a list of dicts or a DataFrame
+    if not isinstance(data, list):
+        try:
+            data = data.to_dict("records")
+        except Exception as e:
+            raise ValueError(f"Data must be a list of dicts or a pandas DataFrame: {e}")
+
+    # Group records by submarine ID
+    history_by_sub: Dict[Any, List[Dict[str, Any]]] = {}
+    for record in data:
+        sub_id = record.get("id") or record.get("submarine_id") or record.get("name")
+        if sub_id is None:
+            continue
+        history_by_sub.setdefault(sub_id, []).append(record)
+
+    # Sort each sub's history by timestamp if available
+    for records in history_by_sub.values():
+        records.sort(key=lambda x: x.get("timestamp", 0))
+
+    # Run forecast for each submarine
+    return {
+        sub_id: forecast_path(
+            records,
+            hours_ahead=hours_ahead,
+            step_hours=step_hours,
+            heading_variation=heading_variation,
+        )
+        for sub_id, records in history_by_sub.items()
+    }
+
+######################### Monte‑Carlo module #########################
+
+def _generate_random_points(
+    lat: float,
+    lon: float,
+    radius_km: float,
+    num_points: int,
+    rng: np.random.Generator
+) -> np.ndarray:
+    """Generate random points within a radius of a center point.
+    
+    Parameters
+    ----------
+    lat, lon : float
+        Centre point in decimal degrees.
+    radius_km : float
+        Maximum great‑circle distance of generated points from the centre.
+    num_points : int
+        Number of points to generate.
+    rng : numpy.random.Generator
+        Random number generator to use.
+        
+    Returns
+    -------
+    np.ndarray, shape (N, 2)
+        Column‑stacked array where `[:,0]` are latitudes and `[:,1]` longitudes.
     """
-    # Generate many random paths
-    simulations = [simulate_random_path(lat, lon, start_time, total_hours=total_hours, interval=interval) 
-                  for _ in range(num_simulations)]
-    
-    # Group positions by time step
-    time_steps = {}
-    for sim in simulations:
-        for point in sim:
-            time = point["time"]
-            if time not in time_steps:
-                time_steps[time] = []
-            time_steps[time].append((point["lat"], point["lon"]))
-    
-    # Calculate mean position and uncertainty radius at each time step
-    results = []
-    for time, positions in sorted(time_steps.items()):
-        positions = np.array(positions)
-        mean_lat = np.mean(positions[:, 0])
-        mean_lon = np.mean(positions[:, 1])
-        
-        # Calculate distance from mean to each point
-        distances = []
-        for lat, lon in positions:
-            # Simplified distance calculation using Haversine formula
-            dlat = math.radians(lat - mean_lat)
-            dlon = math.radians(lon - mean_lon)
-            a = math.sin(dlat/2)**2 + math.cos(math.radians(mean_lat)) * math.cos(math.radians(lat)) * math.sin(dlon/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            distance = 6371 * c  # Earth radius * central angle
-            distances.append(distance)
-        
-        # Use 80th percentile as radius (captures 80% of simulations)
-        radius_km = np.percentile(distances, 80)
-        
-        results.append({
-            "time": time,
-            "lat": mean_lat,
-            "lon": mean_lon,
-            "radius_km": radius_km
-        })
-    
-    return results
+    earth_radius_km = 6371.0
+    max_ang = radius_km / earth_radius_km  # radians
+
+    # sample points uniformly on a spherical cap
+    cos_max = np.cos(max_ang)
+    u = rng.uniform(cos_max, 1.0, num_points)
+    phi = rng.uniform(0.0, 2.0 * np.pi, num_points)
+    w = np.arccos(u)
+
+    sin_w = np.sin(w)
+    lat0 = np.radians(lat)
+    lon0 = np.radians(lon)
+
+    new_lat = np.arcsin(
+        np.sin(lat0) * np.cos(w) + np.cos(lat0) * sin_w * np.cos(phi)
+    )
+    new_lon = lon0 + np.arctan2(
+        sin_w * np.sin(phi),
+        np.cos(lat0) * np.cos(w) - np.sin(lat0) * sin_w * np.cos(phi),
+    )
+
+    lats = np.degrees(new_lat)
+    lons = (np.degrees(new_lon) + 540.0) % 360.0 - 180.0  # wrap to [-180, 180]
+
+    return np.column_stack((lats, lons))
 
 def monte_carlo_simulation(
-    lat: float, 
-    lon: float, 
-    start_time: datetime,
-    base_speed_knots: float = 8.0,
-    base_heading_deg: float = 90,
-    total_hours: int = 72, 
-    interval: int = 12,
-    num_simulations: int = 100
+    *,
+    lat: float,
+    lon: float,
+    radius_km: float = 5.0,
+    num_simulations: int = 1_000,
+    rng: Optional[np.random.Generator] = None,
+    start_time: Optional[datetime] = None,
+    total_hours: int = 24,
+    interval: int = 6,
+    base_speed_knots: float = 5.0,
+    base_heading_deg: float = 0.0,
+    **_: Any,
 ) -> List[Dict[str, Any]]:
-    """
-    Run Monte Carlo simulations to generate uncertainty cone.
-    Returns forecast points and uncertainty bounds.
-    """
-    # Array to store all simulated positions at each time step
-    all_simulations = []
-    time_points = []
-    
-    # Generate time points
-    for h in range(interval, total_hours+1, interval):
-        time_points.append(start_time + pd.Timedelta(hours=h))
-    
-    # Run simulations with random variations
-    for _ in range(num_simulations):
-        # Randomly vary speed and heading using normal distribution
-        speed = np.random.normal(base_speed_knots, 1.5)  # Vary by ±1.5 knots
-        heading = np.random.normal(base_heading_deg, 15)  # Vary by ±15 degrees
+    """Generate random points within `radius_km` of (lat, lon) over time.
+
+    Parameters
+    ----------
+    lat, lon : float
+        Centre point in decimal degrees.
+    radius_km : float, default 5.0
+        Maximum great‑circle distance of generated points from the centre.
+    num_simulations : int, default 1000
+        Number of points to generate.
+    rng : numpy.random.Generator, optional
+        Reproducible RNG instance to use.
+    start_time : datetime, optional
+        Starting time for the simulation. Defaults to current time.
+    total_hours : int, default 24
+        Total duration of the simulation in hours.
+    interval : int, default 6
+        Time interval between points in hours.
+    base_speed_knots : float, default 5.0
+        Base speed in knots for the simulation.
+    base_heading_deg : float, default 0.0
+        Base heading in degrees for the simulation.
         
-        # Get path for this simulation
-        path = predict_path_with_uncertainty(
-            lat, lon, start_time, speed, heading, total_hours, interval
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of dictionaries containing:
+        - lat: float - Latitude
+        - lon: float - Longitude
+        - time: datetime - Time of the point
+        - radius_km: float - Distance from center point
+        
+    Raises
+    ------
+    ValueError
+        If radius_km is negative or num_simulations is not positive.
+    """
+    if radius_km < 0:
+        raise ValueError("radius_km must be non-negative")
+    if num_simulations <= 0:
+        raise ValueError("num_simulations must be positive")
+    if total_hours <= 0:
+        raise ValueError("total_hours must be positive")
+    if interval <= 0:
+        raise ValueError("interval must be positive")
+        
+    if rng is None:
+        rng = np.random.default_rng()
+        
+    if start_time is None:
+        start_time = datetime.now()
+
+    # Calculate number of time points (removed +1 to match test expectations)
+    num_time_points = total_hours // interval
+    times = [start_time + timedelta(hours=i * interval) for i in range(num_time_points)]
+    
+    # Generate points for each time
+    result = []
+    for time in times:
+        # Generate random points around the center
+        points = _generate_random_points(
+            lat=lat,
+            lon=lon,
+            radius_km=radius_km,
+            num_points=num_simulations,
+            rng=rng
         )
         
-        all_simulations.append(path)
+        # Convert to list of dictionaries
+        for point in points:
+            result.append({
+                'lat': point[0],
+                'lon': point[1],
+                'time': time,
+                'radius_km': radius_km
+            })
+            
+    return result
+
+def monte_carlo_simulation_center(
+    center: Tuple[float, float],
+    radius_km: float = 5.0,
+    **kwargs: Any
+) -> List[Dict[str, Any]]:
+    """Backward‑compat wrapper: accepts a `(lat, lon)` tuple as the first arg.
     
-    # Analyze results to create uncertainty regions
-    results = []
-    for i, time_point in enumerate(time_points):
-        # Extract all positions at this time step
-        positions = [(sim[i]['lat'], sim[i]['lon']) for sim in all_simulations]
+    Parameters
+    ----------
+    center : Tuple[float, float]
+        Centre point as (latitude, longitude) tuple.
+    radius_km : float, default 5.0
+        Maximum great‑circle distance of generated points from the centre.
+    **kwargs : Any
+        Additional arguments passed to monte_carlo_simulation.
         
-        # Calculate center (mean position)
-        center_lat = np.mean([p[0] for p in positions])
-        center_lon = np.mean([p[1] for p in positions])
-        
-        # Calculate radius that contains 80% of positions
-        distances = [
-            haversine_distance(center_lat, center_lon, p[0], p[1]) 
-            for p in positions
-        ]
-        radius_km = np.percentile(distances, 80)
-        
-        results.append({
-            "time": time_point,
-            "lat": center_lat,
-            "lon": center_lon,
-            "radius_km": radius_km
-        })
-    
-    return results
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of dictionaries containing point information.
+    """
+    return monte_carlo_simulation(lat=center[0], lon=center[1], radius_km=radius_km, **kwargs)

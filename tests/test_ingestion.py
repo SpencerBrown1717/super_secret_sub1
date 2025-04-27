@@ -69,6 +69,7 @@ def test_load_data_api(monkeypatch):
     """Test the main load_data function with API input."""
     # Create a mock response
     mock_response = Mock()
+    mock_response.status_code = 200
     mock_response.json.return_value = [
         {
             'sub_id': 'Jin1',

@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    
+        <script>
+            L_NO_TOUCH = false;
+            L_DISABLE_3D = false;
+        </script>
+    
+    <style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>
+    <style>#map {position:absolute;top:0;bottom:0;right:0;left:0;}</style>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_19ff37609144045a22295c5f200c0405 {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+        
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.1.0/leaflet.markercluster.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.1.0/MarkerCluster.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.1.0/MarkerCluster.Default.css"/>
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_19ff37609144045a22295c5f200c0405" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_19ff37609144045a22295c5f200c0405 = L.map(
+                "map_19ff37609144045a22295c5f200c0405",
+                {
+                    center: [16.666666666666668, 112.03333333333332],
+                    crs: L.CRS.EPSG3857,
+                    ...{
+  "zoom": 5,
+  "zoomControl": true,
+  "preferCanvas": false,
+}
+
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_fc6f23c4c4143a4dcd51393d0f88929a = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {
+  "minZoom": 0,
+  "maxZoom": 19,
+  "maxNativeZoom": 19,
+  "noWrap": false,
+  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_fc6f23c4c4143a4dcd51393d0f88929a.addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            var tile_layer_d7d0e111e942522694b9ca81b9c281e9 = L.tileLayer(
+                "https://sentinel-s2-l1c.s3.amazonaws.com/tiles/{z}/{x}/{y}.jpg",
+                {
+  "minZoom": 0,
+  "maxZoom": 18,
+  "maxNativeZoom": 18,
+  "noWrap": false,
+  "attribution": "Sentinel-2",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_d7d0e111e942522694b9ca81b9c281e9.addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            var tile_layer_5047be332f770f5f3802ada368a756c0 = L.tileLayer(
+                "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {
+  "minZoom": 0,
+  "maxZoom": 18,
+  "maxNativeZoom": 18,
+  "noWrap": false,
+  "attribution": "OpenStreetMap",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_5047be332f770f5f3802ada368a756c0.addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            var marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b = L.markerClusterGroup(
+                {
+}
+            );
+        
+    
+            var marker_ff0cfd61b9a534435ded7bbba3145581 = L.marker(
+                [16.8, 112.7],
+                {
+  "options": {
+  "tooltip": "Jin1 - Last Known Position",
+},
+}
+            ).addTo(marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b);
+        
+    
+            var icon_5b170a9e741dddd9643a789a38f245e9 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "red",
+  "iconColor": "white",
+  "icon": "ship",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_8aafe11382bf8c2f8c30d16b53f61c31 = L.popup({
+  "maxWidth": 300,
+});
+
+        
+            
+                var html_c0c2b141de8015134ecef7124b3bbf85 = $(`<div id="html_c0c2b141de8015134ecef7124b3bbf85" style="width: 100.0%; height: 100.0%;">         <b>Jin1</b><br>         Last seen: 2025-03-18 09:45<br>         Status: In Port<br>         Position: 16.8000, 112.7000         </div>`)[0];
+                popup_8aafe11382bf8c2f8c30d16b53f61c31.setContent(html_c0c2b141de8015134ecef7124b3bbf85);
+            
+        
+
+        marker_ff0cfd61b9a534435ded7bbba3145581.bindPopup(popup_8aafe11382bf8c2f8c30d16b53f61c31)
+        ;
+
+        
+    
+    
+                marker_ff0cfd61b9a534435ded7bbba3145581.setIcon(icon_5b170a9e741dddd9643a789a38f245e9);
+            
+    
+            var marker_82b75818943e41c7666342d929650b73 = L.marker(
+                [17.1, 110.8],
+                {
+  "options": {
+  "tooltip": "Jin2 - Last Known Position",
+},
+}
+            ).addTo(marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b);
+        
+    
+            var icon_53e3fa8f6ebcc53c989a041a00d32d3f = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "blue",
+  "iconColor": "white",
+  "icon": "ship",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_989b813b510f4a4835e0f7026c10c719 = L.popup({
+  "maxWidth": 300,
+});
+
+        
+            
+                var html_cebec298cc13652b23f815efc3b55cf5 = $(`<div id="html_cebec298cc13652b23f815efc3b55cf5" style="width: 100.0%; height: 100.0%;">         <b>Jin2</b><br>         Last seen: 2025-03-21 12:30<br>         Status: In Port<br>         Position: 17.1000, 110.8000         </div>`)[0];
+                popup_989b813b510f4a4835e0f7026c10c719.setContent(html_cebec298cc13652b23f815efc3b55cf5);
+            
+        
+
+        marker_82b75818943e41c7666342d929650b73.bindPopup(popup_989b813b510f4a4835e0f7026c10c719)
+        ;
+
+        
+    
+    
+                marker_82b75818943e41c7666342d929650b73.setIcon(icon_53e3fa8f6ebcc53c989a041a00d32d3f);
+            
+    
+            var marker_45532263047b37229b00acb59d008224 = L.marker(
+                [18.2, 109.5],
+                {
+  "options": {
+  "tooltip": "Jin3 - Last Known Position",
+},
+}
+            ).addTo(marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b);
+        
+    
+            var icon_295275bbe05bbc95b2e67ce8753ecf58 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "green",
+  "iconColor": "white",
+  "icon": "ship",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_a77c4b3dfece364b90fb194ab283ee75 = L.popup({
+  "maxWidth": 300,
+});
+
+        
+            
+                var html_4ca04351db613bb73935396bd768f0be = $(`<div id="html_4ca04351db613bb73935396bd768f0be" style="width: 100.0%; height: 100.0%;">         <b>Jin3</b><br>         Last seen: 2025-03-25 07:20<br>         Status: At Sea<br>         Position: 18.2000, 109.5000         </div>`)[0];
+                popup_a77c4b3dfece364b90fb194ab283ee75.setContent(html_4ca04351db613bb73935396bd768f0be);
+            
+        
+
+        marker_45532263047b37229b00acb59d008224.bindPopup(popup_a77c4b3dfece364b90fb194ab283ee75)
+        ;
+
+        
+    
+    
+                marker_45532263047b37229b00acb59d008224.setIcon(icon_295275bbe05bbc95b2e67ce8753ecf58);
+            
+    
+            var marker_51c137fec9ff07f0be73a28039cd3f6e = L.marker(
+                [13.2, 117.4],
+                {
+  "options": {
+  "tooltip": "Jin4 - Last Known Position",
+},
+}
+            ).addTo(marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b);
+        
+    
+            var icon_7df00ddd6150ac5b6fd89bf10d54169f = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "purple",
+  "iconColor": "white",
+  "icon": "ship",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_b389e552c925944c8000251a97c6293b = L.popup({
+  "maxWidth": 300,
+});
+
+        
+            
+                var html_22e22237244688c06707e2f361e9c76c = $(`<div id="html_22e22237244688c06707e2f361e9c76c" style="width: 100.0%; height: 100.0%;">         <b>Jin4</b><br>         Last seen: 2025-03-15 11:45<br>         Status: In Port<br>         Position: 13.2000, 117.4000         </div>`)[0];
+                popup_b389e552c925944c8000251a97c6293b.setContent(html_22e22237244688c06707e2f361e9c76c);
+            
+        
+
+        marker_51c137fec9ff07f0be73a28039cd3f6e.bindPopup(popup_b389e552c925944c8000251a97c6293b)
+        ;
+
+        
+    
+    
+                marker_51c137fec9ff07f0be73a28039cd3f6e.setIcon(icon_7df00ddd6150ac5b6fd89bf10d54169f);
+            
+    
+            var marker_44a7cccf0e7a8c0ed2657e23542aa48c = L.marker(
+                [16.5, 112.3],
+                {
+  "options": {
+  "tooltip": "Jin5 - Last Known Position",
+},
+}
+            ).addTo(marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b);
+        
+    
+            var icon_49baaedb1ec5f20e51d27411d53f55bb = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "ship",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_98ab2f216d9f8782176d0a2983aad45e = L.popup({
+  "maxWidth": 300,
+});
+
+        
+            
+                var html_37bd6fca2f3496775fc3616a4ff1d81e = $(`<div id="html_37bd6fca2f3496775fc3616a4ff1d81e" style="width: 100.0%; height: 100.0%;">         <b>Jin5</b><br>         Last seen: 2025-03-22 08:15<br>         Status: In Port<br>         Position: 16.5000, 112.3000         </div>`)[0];
+                popup_98ab2f216d9f8782176d0a2983aad45e.setContent(html_37bd6fca2f3496775fc3616a4ff1d81e);
+            
+        
+
+        marker_44a7cccf0e7a8c0ed2657e23542aa48c.bindPopup(popup_98ab2f216d9f8782176d0a2983aad45e)
+        ;
+
+        
+    
+    
+                marker_44a7cccf0e7a8c0ed2657e23542aa48c.setIcon(icon_49baaedb1ec5f20e51d27411d53f55bb);
+            
+    
+            var marker_f897a5ebfed984913f531a3ded975292 = L.marker(
+                [18.2, 109.5],
+                {
+  "options": {
+  "tooltip": "Jin6 - Last Known Position",
+},
+}
+            ).addTo(marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b);
+        
+    
+            var icon_40cefd46e8fe58e866251802b2ea65e4 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "darkred",
+  "iconColor": "white",
+  "icon": "ship",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_b8bd2792fa8e882a17958f91c180a849 = L.popup({
+  "maxWidth": 300,
+});
+
+        
+            
+                var html_69927bb956ce1ef0a8a31bd83d7e928e = $(`<div id="html_69927bb956ce1ef0a8a31bd83d7e928e" style="width: 100.0%; height: 100.0%;">         <b>Jin6</b><br>         Last seen: 2025-02-10 10:20<br>         Status: In Port<br>         Position: 18.2000, 109.5000         </div>`)[0];
+                popup_b8bd2792fa8e882a17958f91c180a849.setContent(html_69927bb956ce1ef0a8a31bd83d7e928e);
+            
+        
+
+        marker_f897a5ebfed984913f531a3ded975292.bindPopup(popup_b8bd2792fa8e882a17958f91c180a849)
+        ;
+
+        
+    
+    
+                marker_f897a5ebfed984913f531a3ded975292.setIcon(icon_40cefd46e8fe58e866251802b2ea65e4);
+            
+    
+            marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b.addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            var poly_line_6e35baa2af5002d209f432e3fc888575 = L.polyline(
+                [[18.2, 109.5], [18.19266543694743, 111.18307794792153], [18.170669309198644, 112.86587280408202], [18.13403427980975, 114.5481026431207], [18.08279805014722, 116.22948786458807], [18.01701325490909, 117.90975233577844], [17.936747316369, 119.58862451129534]],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": "5,5", "dashOffset": null, "fill": false, "fillColor": "green", "fillOpacity": 0.2, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "noClip": false, "opacity": 1.0, "smoothFactor": 1.0, "stroke": true, "weight": 2}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            poly_line_6e35baa2af5002d209f432e3fc888575.bindTooltip(
+                `<div>
+                     Jin3 - Predicted Path
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_c1288d520cc1f81dbb9964f4417a668e = L.circle(
+                [18.19266543694743, 111.18307794792153],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.1, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 10000.0, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_c1288d520cc1f81dbb9964f4417a668e.bindTooltip(
+                `<div>
+                     Jin3 - 2025-03-25 19:20 - Uncertainty: 10.0 km
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_marker_f5f18e3cbbf14031b7819e9942cc3c6a = L.circleMarker(
+                [18.19266543694743, 111.18307794792153],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.6, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 3, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_marker_f5f18e3cbbf14031b7819e9942cc3c6a.bindTooltip(
+                `<div>
+                     Jin3 - Forecast for 2025-03-25 19:20
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_d332b6cd9573969e2ecf911e45a155a8 = L.circle(
+                [18.170669309198644, 112.86587280408202],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.1, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 20000.0, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_d332b6cd9573969e2ecf911e45a155a8.bindTooltip(
+                `<div>
+                     Jin3 - 2025-03-26 07:20 - Uncertainty: 20.0 km
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_marker_5a9670638d7d5898cd5251fbc522a810 = L.circleMarker(
+                [18.170669309198644, 112.86587280408202],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.6, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 3, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_marker_5a9670638d7d5898cd5251fbc522a810.bindTooltip(
+                `<div>
+                     Jin3 - Forecast for 2025-03-26 07:20
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_d5270870680593b15b5b2420758bb4d1 = L.circle(
+                [18.13403427980975, 114.5481026431207],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.1, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 30000.0, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_d5270870680593b15b5b2420758bb4d1.bindTooltip(
+                `<div>
+                     Jin3 - 2025-03-26 19:20 - Uncertainty: 30.0 km
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_marker_7e9bba46a6f214123bdee4c4431d34cf = L.circleMarker(
+                [18.13403427980975, 114.5481026431207],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.6, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 3, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_marker_7e9bba46a6f214123bdee4c4431d34cf.bindTooltip(
+                `<div>
+                     Jin3 - Forecast for 2025-03-26 19:20
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_d26f133cd47b37376779664414f15419 = L.circle(
+                [18.08279805014722, 116.22948786458807],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.1, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 40000.0, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_d26f133cd47b37376779664414f15419.bindTooltip(
+                `<div>
+                     Jin3 - 2025-03-27 07:20 - Uncertainty: 40.0 km
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_marker_854dcb0ebfe951e4df296490cacba4a7 = L.circleMarker(
+                [18.08279805014722, 116.22948786458807],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.6, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 3, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_marker_854dcb0ebfe951e4df296490cacba4a7.bindTooltip(
+                `<div>
+                     Jin3 - Forecast for 2025-03-27 07:20
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_86c6acd989ce1fa17a03be1c37fe332d = L.circle(
+                [18.01701325490909, 117.90975233577844],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.1, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 50000.0, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_86c6acd989ce1fa17a03be1c37fe332d.bindTooltip(
+                `<div>
+                     Jin3 - 2025-03-27 19:20 - Uncertainty: 50.0 km
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_marker_263f0ae6a7613c442b6bb18b071d83b3 = L.circleMarker(
+                [18.01701325490909, 117.90975233577844],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.6, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 3, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_marker_263f0ae6a7613c442b6bb18b071d83b3.bindTooltip(
+                `<div>
+                     Jin3 - Forecast for 2025-03-27 19:20
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_0ee322957a5aa31f6e7dcaff48e4bca0 = L.circle(
+                [17.936747316369, 119.58862451129534],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.1, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 60000.0, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_0ee322957a5aa31f6e7dcaff48e4bca0.bindTooltip(
+                `<div>
+                     Jin3 - 2025-03-28 07:20 - Uncertainty: 60.0 km
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var circle_marker_abec6f3b8391758d421e3e15563d4b9e = L.circleMarker(
+                [17.936747316369, 119.58862451129534],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.6, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 3, "stroke": true, "weight": 3}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+        
+    
+            circle_marker_abec6f3b8391758d421e3e15563d4b9e.bindTooltip(
+                `<div>
+                     Jin3 - Forecast for 2025-03-28 07:20
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+            var layer_control_e2856fca604a982f8017b7a2966c6a03_layers = {
+                base_layers : {
+                    "openstreetmap" : tile_layer_fc6f23c4c4143a4dcd51393d0f88929a,
+                    "OpenStreetMap" : tile_layer_5047be332f770f5f3802ada368a756c0,
+                },
+                overlays :  {
+                    "Sentinel-2 Satellite" : tile_layer_d7d0e111e942522694b9ca81b9c281e9,
+                    "macro_element_ffd4f7aa45cfb4726600d455f3c90c1b" : marker_cluster_ffd4f7aa45cfb4726600d455f3c90c1b,
+                },
+            };
+            let layer_control_e2856fca604a982f8017b7a2966c6a03 = L.control.layers(
+                layer_control_e2856fca604a982f8017b7a2966c6a03_layers.base_layers,
+                layer_control_e2856fca604a982f8017b7a2966c6a03_layers.overlays,
+                {
+  "position": "topright",
+  "collapsed": true,
+  "autoZIndex": true,
+}
+            ).addTo(map_19ff37609144045a22295c5f200c0405);
+
+        
+</script>
+</html>

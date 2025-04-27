@@ -46,33 +46,37 @@ def test_submarine_update_from_record_no_event():
     assert sub.last_time == record['timestamp']
     assert not sub.at_sea  # Should remain False without event type
 
-def test_update_sub_state(sample_submarine_records):
-    """Test the update_sub_state function with a DataFrame."""
-    state = update_sub_state(sample_submarine_records)
+def test_update_sub_state():
+    """Test the update_sub_state function with a submarine."""
+    sub = Submarine("Jin1")
+    record = {
+        'latitude': 15.0,
+        'longitude': 110.0,
+        'timestamp': datetime.now(),
+        'event_type': 'departure'
+    }
+    sub.update_from_record(record)
+    state = update_sub_state(sub)
     assert state is not None
-    assert state["last_lat"] == 15.1
-    assert state["last_lon"] == 110.1
-    assert state["at_sea"]  # Should be at sea due to departure event
-    assert len(state["history"]) == 2
+    assert state["at_sea"]
+    assert not state["in_port"]
 
 def test_update_sub_state_empty():
-    """Test update_sub_state with empty DataFrame."""
-    records = pd.DataFrame(columns=['latitude', 'longitude', 'timestamp', 'event_type'])
-    state = update_sub_state(records)
+    """Test update_sub_state with empty submarine."""
+    sub = Submarine("Jin1")
+    state = update_sub_state(sub)
     assert state is None
 
 def test_update_sub_state_no_events():
-    """Test update_sub_state with records but no events."""
-    now = datetime.now()
-    records = pd.DataFrame([
-        {
-            'latitude': 15.0,
-            'longitude': 110.0,
-            'timestamp': now - timedelta(hours=1),
-            'event_type': None
-        }
-    ])
-    
-    state = update_sub_state(records)
+    """Test update_sub_state with submarine but no events."""
+    sub = Submarine("Jin1")
+    record = {
+        'latitude': 15.0,
+        'longitude': 110.0,
+        'timestamp': datetime.now()
+    }
+    sub.update_from_record(record)
+    state = update_sub_state(sub)
     assert state is not None
-    assert not state["at_sea"]  # Should be False without any events
+    assert not state["at_sea"]
+    assert state["in_port"]
