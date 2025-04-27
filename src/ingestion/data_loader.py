@@ -11,6 +11,10 @@ import requests
 from pathlib import Path
 from typing import Union, List, Dict, Any, Optional
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # --- constants ---------------------------------------------------------------
 JIN_SUBMARINES = ["Jin1", "Jin2", "Jin3", "Jin4", "Jin5", "Jin6"]
 
@@ -37,7 +41,7 @@ def filter_jin_class_subs(df):
     
     return df[mask_type & mask_id].reset_index(drop=True)
 
-def load_csv_data(csv_path: str, target_subs: list = None) -> pd.DataFrame:
+def load_csv_data(csv_path: str, target_subs: list = None, simulation_year: int = None) -> pd.DataFrame:
     """
     Load submarine position data from a CSV file.
     
@@ -53,6 +57,8 @@ def load_csv_data(csv_path: str, target_subs: list = None) -> pd.DataFrame:
         target_subs (list, optional): List of submarine IDs to filter on.
                                       If provided, only data for those IDs will be returned.
                                       If None, all subs in the file are returned.
+        simulation_year (int, optional): Year to use for timestamp generation if CSV has no timestamps.
+                                      If None and no timestamps exist, current year is used.
                                       
     Returns:
         pd.DataFrame: DataFrame containing the submarine data (filtered if target_subs specified).
@@ -74,23 +80,31 @@ def load_csv_data(csv_path: str, target_subs: list = None) -> pd.DataFrame:
     if 'time' in df.columns and 'timestamp' not in df.columns:
         df.rename(columns={'time': 'timestamp'}, inplace=True)
     
-    # Parse timestamps if a timestamp column exists
-    if 'timestamp' in df.columns:
-        try:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-        except Exception as e:
-            print(f"Warning: Failed to parse timestamps in {csv_path}: {e}")
+    # Handle missing timestamps
+    if 'timestamp' not in df.columns:
+        # Generate timestamps based on simulation year
+        year = simulation_year if simulation_year is not None else datetime.now().year
+        df['timestamp'] = pd.date_range(
+            start=f'{year}-01-01',
+            periods=len(df),
+            freq='D'
+        )
+        df['is_simulated'] = True
+    else:
+        df['is_simulated'] = False
+    
+    # Parse timestamps if they exist
+    try:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+    except Exception as e:
+        print(f"Warning: Failed to parse timestamps in {csv_path}: {e}")
     
     # Filter to target submarines if specified
     if target_subs is not None:
         df = df[df['sub_id'].isin(target_subs)]
     
-    # Sort by timestamp for each submarine if timestamp exists
-    if 'timestamp' in df.columns:
-        df = df.sort_values(by=['sub_id', 'timestamp']).reset_index(drop=True)
-    else:
-        # If no timestamp, just sort by id to group data
-        df = df.sort_values(by=['sub_id']).reset_index(drop=True)
+    # Sort by timestamp for each submarine
+    df = df.sort_values(by=['sub_id', 'timestamp']).reset_index(drop=True)
     
     return df
 
@@ -141,27 +155,26 @@ def fetch_api_data(api_url: str, params: dict = None, target_subs: list = None) 
     
     return df
 
-def load_data(source: Union[str, Path], target_subs: list = None) -> pd.DataFrame:
-    """
-    Load data from a source which can be a CSV file path or API URL.
-    Returns a filtered DataFrame containing only Jin-class submarines.
-
-    Parameters:
-        source (Union[str, Path]): Path to CSV file or API URL
-        target_subs (list, optional): List of submarine IDs to filter on.
-                                      If None, defaults to JIN_CLASS_IDS.
-    """
-    # Use default Jin-class IDs if no specific targets provided
-    if target_subs is None:
-        target_subs = JIN_SUBMARINES
-
-    # Convert Path to string if needed
-    source_str = str(source)
-
-    # Check if source is a file path or URL
-    if source_str.startswith('http'):
-        df = fetch_api_data(source_str, target_subs=target_subs)
-    else:
-        df = load_csv_data(source_str, target_subs=target_subs)
-    
-    return df 
+def load_data(file_path: Path) -> pd.DataFrame:
+    """Load submarine tracking data from CSV file."""
+    try:
+        df = pd.read_csv(file_path)
+        required_columns = ['sub_id', 'timestamp', 'latitude', 'longitude']
+        
+        # Validate required columns
+        missing_cols = [col for col in required_columns if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+            
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Sort by submarine ID and timestamp
+        df = df.sort_values(['sub_id', 'timestamp'])
+        
+        logger.info(f"Loaded {len(df)} records from {file_path}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error loading data from {file_path}: {str(e)}")
+        raise 

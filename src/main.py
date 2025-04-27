@@ -12,14 +12,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.ingestion.data_loader import load_data
 from src.models.submarine import load_submarines_from_csv
 from src.models.fleet import FLEET
-from src.visualization import leaflet_mapper
+from src.visualization.leaflet_mapper import create_leaflet_map
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Jin-class submarine tracker")
     parser.add_argument("--input", dest="input_path", help="Input CSV file path", required=True)
     parser.add_argument("--output", dest="output_path", help="Output HTML file path", required=True)
-    parser.add_argument("--confidence-rings", type=int, default=3, help="Number of confidence rings to display")
+    parser.add_argument("--confidence-rings", dest="confidence_rings", type=int, default=3, 
+                      help="Number of confidence rings to display")
     return parser.parse_args()
 
 def run(input_path: Path, output_path: Path, confidence_rings: int = 3):
@@ -35,7 +36,7 @@ def run(input_path: Path, output_path: Path, confidence_rings: int = 3):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Generate the map
-    leaflet_mapper.create_leaflet_map(df, output_path)
+    create_leaflet_map(df, output_path, confidence_rings, submarines)
     print(f"Map created successfully at {output_path}")
 
 def main(**kw):

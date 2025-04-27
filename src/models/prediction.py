@@ -1,316 +1,364 @@
-"""Prediction engine for Jin-class submarine tracking."""
-import random
-import numpy as np
+"""submarine_predictor.py  ✨
+A crisp, self‑contained prediction engine for submarine movements
+(beautifully formatted, typing‑strict, and ready for unit tests).
+"""
+from __future__ import annotations
+
 import logging
-from typing import List, Dict, Any, Tuple
+import math
+import random
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any, Dict, Iterable, List, Tuple, TypedDict
 
+import numpy as np
+import pandas as pd
+from shapely.geometry import Point
+
+# ────────────────────────────────────────────────────────────────────────────────
+# External domain models (kept as *Any* to avoid circular imports)
+# ────────────────────────────────────────────────────────────────────────────────
+Submarine = Any  # forward‑decl for type checkers
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Logging
+# ────────────────────────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-def monte_carlo_simulation(history: List[Dict], num_simulations: int = 500, 
-                          hours_ahead: int = 48, step_hours: int = 3) -> Dict:
-    """
-    Perform Monte Carlo simulation to predict submarine movement.
-    
-    Args:
-        history: List of historical position records
-        num_simulations: Number of simulations to run
-        hours_ahead: How many hours ahead to predict
-        step_hours: Time step for predictions in hours
-        
-    Returns:
-        Dictionary with prediction results
-    """
-    if not history or len(history) < 2:
-        logger.warning("Insufficient history for prediction")
-        return {
-            'central_path': [],
-            'forecast_path': [],
-            'forecast_times': [],
-            'confidence_rings': [],
-            'simulated_points': []
-        }
-    
-    # Sort history by timestamp
-    history = sorted(history, key=lambda x: x['timestamp'])
-    
-    # Calculate historical movement patterns
-    speeds = []
-    bearings = []
-    
-    for i in range(1, len(history)):
-        prev = history[i-1]
-        curr = history[i]
-        
-        # Calculate speed and bearing
-        speed, bearing = _calculate_movement(
-            prev['latitude'], prev['longitude'],
-            curr['latitude'], curr['longitude'],
-            _time_diff_hours(prev['timestamp'], curr['timestamp'])
-        )
-        
-        speeds.append(speed)
-        bearings.append(bearing)
-    
-    # Calculate mean and standard deviation of speed and bearing
-    mean_speed = np.mean(speeds) if speeds else 5.0  # Default 5 knots if no data
-    std_speed = np.std(speeds) if len(speeds) > 1 else 2.0
-    
-    # For bearing, we need to handle circular statistics
-    sin_bearings = np.sin(np.radians(bearings))
-    cos_bearings = np.cos(np.radians(bearings))
-    mean_bearing_rad = np.arctan2(np.mean(sin_bearings), np.mean(cos_bearings))
-    mean_bearing = np.degrees(mean_bearing_rad) % 360
-    
-    # Concentration parameter for von Mises distribution (approximation)
-    bearing_concentration = 1.0 / (np.std(bearings) if len(bearings) > 1 else 30.0)
-    
-    # Starting point for prediction
-    last_pos = history[-1]
-    start_lat = last_pos['latitude']
-    start_lon = last_pos['longitude']
-    
-    # Generate time steps
-    time_steps = list(range(step_hours, hours_ahead + 1, step_hours))
-    
-    # Run Monte Carlo simulations
-    all_simulations = []
-    
-    for _ in range(num_simulations):
-        path = [(start_lon, start_lat)]  # Start with the last known position
-        curr_lat, curr_lon = start_lat, start_lon
-        
-        for _ in time_steps:
-            # Sample speed from normal distribution
-            speed = max(0, np.random.normal(mean_speed, std_speed))
-            
-            # Sample bearing from von Mises distribution (approximation)
-            bearing = (np.random.normal(mean_bearing, 360 / (2 * np.pi * bearing_concentration))) % 360
-            
-            # Move the submarine
-            curr_lat, curr_lon = _move_point(curr_lat, curr_lon, speed * step_hours, bearing)
-            
-            # Ensure the point is in water (simplified check)
-            while not _is_in_water(curr_lat, curr_lon):
-                # Adjust bearing and try again
-                bearing = (bearing + 45) % 360
-                curr_lat, curr_lon = _move_point(curr_lat, curr_lon, speed * step_hours, bearing)
-            
-            path.append((curr_lon, curr_lat))
-        
-        all_simulations.append(path)
-    
-    # Calculate the central (most likely) path
-    central_path = [(start_lon, start_lat)]
-    
-    for i in range(1, len(time_steps) + 1):
-        # Get all positions at this time step from all simulations
-        positions = [sim[i] for sim in all_simulations]
-        
-        # Calculate centroid
-        avg_lon = sum(p[0] for p in positions) / len(positions)
-        avg_lat = sum(p[1] for p in positions) / len(positions)
-        
-        central_path.append((avg_lon, avg_lat))
-    
-    # Calculate confidence rings and collect simulated points
-    confidence_rings = []
-    simulated_points = []
-    
-    for i in range(1, len(time_steps) + 1):
-        positions = np.array([sim[i] for sim in all_simulations])
-        
-        # 67% confidence radius
-        radius_67 = _calculate_confidence_radius(positions, 0.67)
-        
-        # 90% confidence radius
-        radius_90 = _calculate_confidence_radius(positions, 0.90)
-        
-        confidence_rings.append({
-            'center': central_path[i],
-            'radius_67': radius_67,
-            'radius_90': radius_90
-        })
-        
-        # Store all simulated points for this step
-        simulated_points.append(positions.tolist())
-    
-    # Return prediction results
-    return {
-        'central_path': central_path,
-        'forecast_path': central_path[1:],  # Exclude starting point
-        'forecast_times': time_steps,
-        'confidence_rings': confidence_rings,
-        'simulated_points': simulated_points
-    }
+# ────────────────────────────────────────────────────────────────────────────────
+# Helper types & constants
+# ────────────────────────────────────────────────────────────────────────────────
 
-def _calculate_movement(lat1: float, lon1: float, lat2: float, lon2: float, 
-                       hours: float) -> Tuple[float, float]:
-    """Calculate speed (knots) and bearing (degrees) between two points."""
-    from math import radians, sin, cos, atan2, sqrt, degrees
-    
-    # Convert to radians
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    
-    # Haversine formula for distance
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    distance_km = 6371 * c  # Earth radius in km
-    
-    # Convert to nautical miles
-    distance_nm = distance_km / 1.852
-    
-    # Calculate speed in knots (nautical miles per hour)
-    speed = distance_nm / hours if hours > 0 else 0
-    
-    # Calculate bearing
-    y = sin(dlon) * cos(lat2)
-    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)
-    bearing = (degrees(atan2(y, x)) + 360) % 360
-    
-    return speed, bearing
+EARTH_RADIUS_KM = 6_371.0088  # mean Earth radius
 
-def _time_diff_hours(time1: str, time2: str) -> float:
-    """Calculate time difference in hours between two timestamps."""
-    try:
-        # Convert pandas Timestamp to string if needed
-        if hasattr(time1, 'strftime'):
-            time1 = time1.strftime('%Y-%m-%d %H:%M:%S')
-        if hasattr(time2, 'strftime'):
-            time2 = time2.strftime('%Y-%m-%d %H:%M:%S')
-            
-        # Try different formats
-        formats = [
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%dT%H:%M",
-            "%Y-%m-%d"
-        ]
-        
-        dt1 = None
-        dt2 = None
-        
-        for fmt in formats:
-            try:
-                dt1 = datetime.strptime(time1, fmt)
-                break
-            except ValueError:
+class Position(TypedDict):
+    latitude: float
+    longitude: float
+    timestamp: datetime  # ALWAYS store as *datetime* inside the predictor
+    depth: float | None
+    speed: float | None  # knots
+    sub_id: str
+    is_historical: bool
+    source: str
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Maths helpers
+# ────────────────────────────────────────────────────────────────────────────────
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great‑circle distance between two WGS‑84 points (in km)."""
+    φ1, φ2 = map(math.radians, (lat1, lat2))
+    Δφ = math.radians(lat2 - lat1)
+    Δλ = math.radians(lon2 - lon1)
+    a = math.sin(Δφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ / 2) ** 2
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
+
+
+def _destination_point(lat: float, lon: float, bearing_deg: float, dist_km: float) -> Tuple[float, float]:
+    """Project a point *dist_km* away at *bearing_deg* (0° = north)."""
+    φ1 = math.radians(lat)
+    λ1 = math.radians(lon)
+    θ = math.radians(bearing_deg)
+    δ = dist_km / EARTH_RADIUS_KM
+
+    φ2 = math.asin(math.sin(φ1) * math.cos(δ) + math.cos(φ1) * math.sin(δ) * math.cos(θ))
+    λ2 = λ1 + math.atan2(math.sin(θ) * math.sin(δ) * math.cos(φ1), math.cos(δ) - math.sin(φ1) * math.sin(φ2))
+
+    return math.degrees(φ2), (math.degrees(λ2) + 540) % 360 - 180  # normalise to ‑180…180°
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Core predictor class
+# ────────────────────────────────────────────────────────────────────────────────
+
+def _sanitize_positions(positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sanitize position data by removing invalid entries and ensuring proper types."""
+    sanitized = []
+    for pos in positions:
+        try:
+            # Ensure required fields exist and are valid
+            if not all(k in pos for k in ['latitude', 'longitude', 'timestamp']):
+                logger.warning("Position missing required fields: %s", pos)
                 continue
                 
-        for fmt in formats:
-            try:
-                dt2 = datetime.strptime(time2, fmt)
-                break
-            except ValueError:
+            # Convert timestamp to datetime if it's a string
+            if isinstance(pos['timestamp'], str):
+                pos['timestamp'] = pd.to_datetime(pos['timestamp'])
+                
+            # Ensure coordinates are valid numbers
+            lat = float(pos['latitude'])
+            lon = float(pos['longitude'])
+            
+            # Validate coordinate ranges
+            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                logger.warning("Invalid coordinates: lat=%f, lon=%f", lat, lon)
                 continue
-        
-        if dt1 and dt2:
-            diff = dt2 - dt1
-            return diff.total_seconds() / 3600
-        else:
-            logger.warning(f"Could not parse timestamps: {time1}, {time2}")
-            return 1.0  # Default to 1 hour difference
-    except Exception as e:
-        logger.error(f"Error calculating time difference: {e}")
-        return 1.0
+                
+            # Check for NaN or infinite values
+            if np.isnan(lat) or np.isnan(lon) or np.isinf(lat) or np.isinf(lon):
+                logger.warning("NaN or infinite coordinates: lat=%f, lon=%f", lat, lon)
+                continue
+                
+            sanitized.append(pos)
+        except (ValueError, TypeError) as e:
+            logger.warning("Error sanitizing position: %s", e)
+            continue
+            
+    return sanitized
 
-def _move_point(lat: float, lon: float, distance_nm: float, bearing: float) -> Tuple[float, float]:
-    """Move a point by a distance (nautical miles) in a direction (degrees)."""
-    from math import radians, sin, cos, asin, atan2, degrees
-    
-    # Convert to radians
-    lat1 = radians(lat)
-    lon1 = radians(lon)
-    bearing = radians(bearing)
-    
-    # Convert nautical miles to km
-    distance_km = distance_nm * 1.852
-    
-    # Earth radius in km
-    R = 6371.0
-    
-    # Calculate new position
-    lat2 = asin(sin(lat1) * cos(distance_km/R) + cos(lat1) * sin(distance_km/R) * cos(bearing))
-    lon2 = lon1 + atan2(sin(bearing) * sin(distance_km/R) * cos(lat1), 
-                        cos(distance_km/R) - sin(lat1) * sin(lat2))
-    
-    # Convert back to degrees
-    return degrees(lat2), degrees(lon2)
+@dataclass
+class SubmarinePredictor:
+    """Predict future positions for a *single* submarine.
 
-def _is_in_water(lat: float, lon: float) -> bool:
+    A single instance can be reused for many subs — the internal weights update
+    with reinforcement‑style feedback whenever *update_weights* is called.
     """
-    Check if a point is in water (simplified).
-    This should be replaced with a proper check using coastline data.
-    """
-    # Simplified check for major landmasses - would need a proper coastline check
-    # These are very rough bounding boxes for mainland China
-    if (20 < lat < 45 and 105 < lon < 124):
-        # Check if it's in the Gulf of Tonkin or Bohai Sea
-        if (18 < lat < 21 and 107 < lon < 109) or \
-           (37 < lat < 41 and 118 < lon < 122):
-            return True
-        return False  # Likely on land
-        
-    # Taiwan rough check
-    if (22 < lat < 25.5 and 120 < lon < 122):
-        return False  # Likely on Taiwan
-        
-    # Japan rough check
-    if (30 < lat < 46 and 129 < lon < 146):
-        return False  # Likely on Japan
-        
-    # Philippines rough check
-    if (5 < lat < 19 and 117 < lon < 127):
-        return False  # Likely on Philippines
-        
-    # By default, assume it's in water (this is very simplified)
-    return True
 
-def _calculate_confidence_radius(positions: np.ndarray, confidence: float) -> float:
-    """
-    Calculate radius for a given confidence level using distance from centroid.
-    
-    Args:
-        positions: Array of (lon, lat) positions
-        confidence: Confidence level (0-1)
-        
-    Returns:
-        Radius in kilometers for the given confidence level
-    """
-    # Calculate centroid
-    centroid = np.mean(positions, axis=0)
-    
-    # Calculate distances from centroid
-    distances = []
-    for pos in positions:
-        lon1, lat1 = centroid
-        lon2, lat2 = pos
-        distances.append(_haversine_distance(lat1, lon1, lat2, lon2))
-    
-    # Sort distances
-    distances.sort()
-    
-    # Get the index for the desired confidence level
-    idx = int(len(distances) * confidence)
-    
-    # Return the radius
-    return distances[idx]
+    learning_rate: float = 0.1
+    prediction_horizon_days: int = 30
+    historical_weight: float = 0.7
+    current_weight: float = 0.3
 
-def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate the great circle distance between two points on earth."""
-    from math import radians, sin, cos, sqrt, atan2
-    
-    # Convert decimal degrees to radians
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    
-    # Haversine formula
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    r = 6371  # Radius of earth in kilometers
-    
-    return c * r
+    # Monte‑Carlo defaults
+    mc_simulations: int = 1_000
+    mc_sigma_km: float = 15  # lateral scatter per step
+
+    rng: random.Random = field(default_factory=random.Random, repr=False, init=False)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ────────────────────────────────────────────────────────────────────────
+
+    def predict_next_position(self, submarine: Submarine) -> Position | None:
+        """Fast, single‑shot prediction used by the UI (central path)."""
+        history = _sanitize_positions(submarine.get_all_positions())
+        if not history:
+            logger.warning("No positions for %s", getattr(submarine, "sub_id", "<unknown>"))
+            return None
+
+        latest = max(history, key=lambda p: p["timestamp"])
+        patterns = self._movement_patterns(history)
+
+        # Est. speed (knots) → km/day (~ *24* * 1.852)
+        speed_kn = patterns.get("avg_speed", 6)
+        dist_days_km = speed_kn * 1.852 * self.prediction_horizon_days * self.current_weight
+
+        # Choose bearing: keep previous heading if available else random
+        bearing = patterns.get("avg_bearing", self.rng.uniform(0, 360))
+        lat, lon = _destination_point(latest["latitude"], latest["longitude"], bearing, dist_days_km)
+
+        # Snap towards frequent historical hot‑spots
+        if patterns["frequent_locations"]:
+            hot_lat, hot_lon = min(
+                patterns["frequent_locations"],
+                key=lambda pt: _haversine_km(lat, lon, *pt),
+            )
+            lat = self.historical_weight * hot_lat + self.current_weight * lat
+            lon = self.historical_weight * hot_lon + self.current_weight * lon
+
+        return Position(
+            latitude=lat,
+            longitude=lon,
+            timestamp=latest["timestamp"] + timedelta(days=self.prediction_horizon_days),
+            depth=None,
+            speed=None,
+            sub_id=getattr(submarine, "sub_id", "unknown"),
+            is_historical=False,
+            source="predictor|central",
+        )
+
+    # ‑‑ Monte‑Carlo ‑‑
+
+    def run_monte_carlo_predictions(self, submarine: Submarine | Iterable[Position], n_simulations: int | None = None) -> List[Dict[str, Any]]:
+        """Generate a point‑cloud of possible future positions for probabilistic mapping."""
+        try:
+            history = _sanitize_positions(list(submarine) if not hasattr(submarine, "get_all_positions") else submarine.get_all_positions())
+            if not history:
+                logger.warning("No valid positions for Monte Carlo simulation")
+                return []
+
+            latest = max(history, key=lambda p: p["timestamp"])
+            patterns = self._movement_patterns(history)
+
+            # Validate simulation count
+            sim_count = n_simulations or self.mc_simulations
+            if sim_count <= 0:
+                logger.warning("Invalid simulation count: %d", sim_count)
+                return []
+
+            predictions: list[dict[str, Any]] = []
+
+            for _ in range(sim_count):
+                try:
+                    # Sample params with validation
+                    speed_kn = max(3, self.rng.normalvariate(patterns.get("avg_speed", 6), 1))
+                    bearing = self.rng.normalvariate(patterns.get("avg_bearing", self.rng.uniform(0, 360)), 20)
+                    horizon = self.rng.randint(int(self.prediction_horizon_days * 0.5), int(self.prediction_horizon_days * 1.5))
+
+                    # Calculate distance and new position
+                    dist_km = speed_kn * 1.852 * horizon
+                    lat, lon = _destination_point(latest["latitude"], latest["longitude"], bearing, dist_km)
+
+                    # Validate new position
+                    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                        logger.warning("Invalid predicted position: lat=%f, lon=%f", lat, lon)
+                        continue
+
+                    # Add lateral scatter with validation
+                    lat_scatter = self.rng.normalvariate(0, self.mc_sigma_km / 110)
+                    lon_scatter = self.rng.normalvariate(0, self.mc_sigma_km / (111 * math.cos(math.radians(lat))))
+                    
+                    lat += lat_scatter
+                    lon += lon_scatter
+
+                    # Final position validation
+                    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                        logger.warning("Invalid scattered position: lat=%f, lon=%f", lat, lon)
+                        continue
+
+                    predictions.append({
+                        "latitude": lat,
+                        "longitude": lon,
+                        "timestamp": latest["timestamp"] + timedelta(days=horizon),
+                        "step": horizon,  # days ahead
+                        "sub_id": getattr(submarine, "sub_id", "unknown"),
+                    })
+                except Exception as e:
+                    logger.warning("Error in Monte Carlo simulation: %s", e)
+                    continue
+
+            return predictions
+        except Exception as e:
+            logger.error("Fatal error in Monte Carlo predictions: %s", e)
+            return []
+
+    # ‑‑ Reinforcement update ‑‑
+
+    def update_weights(self, actual: Position, predicted: Position | None) -> None:
+        if predicted is None:
+            return
+        error_km = _haversine_km(actual["latitude"], actual["longitude"], predicted["latitude"], predicted["longitude"])
+        factor = 1 + self.learning_rate if error_km < 100 else 1 - self.learning_rate
+        self.historical_weight *= factor
+        self.current_weight *= 2 - factor
+        # normalise
+        s = self.historical_weight + self.current_weight
+        self.historical_weight /= s
+        self.current_weight /= s
+        logger.info("Weights updated → hist=%.2f  curr=%.2f", self.historical_weight, self.current_weight)
+
+    # ────────────────────────────────────────────────────────────────────
+    # Internals
+    # ────────────────────────────────────────────────────────────────────
+
+    def _movement_patterns(self, positions: list[Position]) -> Dict[str, Any]:
+        """Extract naïve statistics from *positions* to guide forecasts."""
+        try:
+            if not positions:
+                logger.warning("No positions provided for movement pattern analysis")
+                return {}
+
+            df = pd.DataFrame(positions)
+            if len(df) < 1:
+                logger.warning("Empty DataFrame after conversion")
+                return {}
+
+            df.sort_values("timestamp", inplace=True)
+
+            # basic kinematics (assuming sorted timestamps)
+            if len(df) >= 2:
+                try:
+                    # avoid divide‑by‑zero on identical times
+                    deltas = (
+                        df[["latitude", "longitude", "timestamp"]]
+                        .assign(ts=lambda d: d["timestamp"].astype("int64") / 1e9)  # seconds
+                        .diff()
+                        .dropna()
+                    )
+                    
+                    if len(deltas) < 1:
+                        logger.warning("No valid time deltas found")
+                        return {"avg_speed": 6, "avg_bearing": random.uniform(0, 360), "frequent_locations": []}
+
+                    dist_km = _haversine_km(
+                        df.iloc[:-1]["latitude"].values,
+                        df.iloc[:-1]["longitude"].values,
+                        df.iloc[1:]["latitude"].values,
+                        df.iloc[1:]["longitude"].values
+                    )
+                    
+                    hours = deltas["ts"].values / 3600
+                    if np.any(hours == 0):
+                        logger.warning("Zero time delta found, using default speed")
+                        speed_knots = np.array([6.0])
+                    else:
+                        speed_knots = dist_km / hours / 1.852
+                    
+                    avg_speed = float(np.nanmean(speed_knots)) if speed_knots.size else 6
+                    
+                    # compute bearings
+                    bearings = np.degrees(np.arctan2(deltas["longitude"], deltas["latitude"])) % 360
+                    avg_bearing = float(np.nanmean(bearings)) if bearings.size else random.uniform(0, 360)
+                except Exception as e:
+                    logger.warning("Error calculating kinematics: %s", e)
+                    avg_speed, avg_bearing = 6, random.uniform(0, 360)
+            else:
+                avg_speed, avg_bearing = 6, random.uniform(0, 360)
+
+            # hot spots (rounded to 2 dp ≈ 1 km)
+            try:
+                rounded = df[["latitude", "longitude"]].round(2)
+                frequent = (
+                    rounded.value_counts()
+                    .nlargest(3)
+                    .index.to_list()
+                )
+            except Exception as e:
+                logger.warning("Error calculating hotspots: %s", e)
+                frequent = []
+
+            return {
+                "avg_speed": avg_speed,
+                "avg_bearing": avg_bearing,
+                "frequent_locations": frequent,
+            }
+        except Exception as e:
+            logger.error("Fatal error in movement pattern analysis: %s", e)
+            return {"avg_speed": 6, "avg_bearing": random.uniform(0, 360), "frequent_locations": []}
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Utility – convert any raw CSV (timestamp string) into *Position* records
+# ────────────────────────────────────────────────────────────────────────────────
+
+def load_detections_csv(csv_path: str, *, sub_id_col: str = "sub_id") -> list[Position]:
+    df = pd.read_csv(csv_path)
+    if "timestamp" not in df.columns:
+        raise ValueError("CSV missing 'timestamp' column")
+
+    records: list[Position] = []
+    for _, row in df.iterrows():
+        try:
+            records.append(
+                Position(
+                    latitude=float(row["latitude"]),
+                    longitude=float(row["longitude"]),
+                    timestamp=pd.to_datetime(row["timestamp"]),
+                    depth=float(row.get("depth", float("nan")) if "depth" in row else float("nan")),
+                    speed=float(row.get("speed", float("nan")) if "speed" in row else float("nan")),
+                    sub_id=str(row[sub_id_col]),
+                    is_historical=True,
+                    source="csv",
+                )
+            )
+        except Exception as exc:
+            logger.debug("Skipping bad row: %s", exc, exc_info=False)
+    return records
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Singleton (import‑time safe)
+# ────────────────────────────────────────────────────────────────────────────────
+PREDICTOR = SubmarinePredictor()

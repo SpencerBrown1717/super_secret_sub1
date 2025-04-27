@@ -3,6 +3,8 @@ import pandas as pd
 from pathlib import Path
 import logging
 from typing import List, Dict, Any, Optional
+import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +26,12 @@ class Submarine:
         self.positions = []  # List of recorded positions (lat, long, timestamp)
         self.predicted_positions = []  # Predicted future positions
         self.confidence_intervals = []  # Confidence intervals for predictions
+        self.historical_sightings = []  # Historical sightings from monitoring
         
     def add_position(self, latitude: float, longitude: float, timestamp: str, 
-                    depth: Optional[float] = None, speed: Optional[float] = None):
+                    depth: Optional[float] = None, speed: Optional[float] = None,
+                    is_historical: bool = False, is_simulated: bool = False,
+                    is_prediction: bool = False):
         """Add a new position record for this submarine."""
         # Validate the position (must be in water or at a base)
         is_valid = self._validate_position(latitude, longitude)
@@ -38,11 +43,62 @@ class Submarine:
             logger.info(f"Adjusted to nearest valid position: ({lat}, {lon})")
             latitude, longitude = lat, lon
             
+        # Convert timestamp to standard format if needed
+        try:
+            if isinstance(timestamp, str):
+                # Split into date and time parts
+                if ' ' in timestamp:
+                    date_part, time_part = timestamp.split(' ', 1)
+                else:
+                    date_part = timestamp
+                    time_part = "00:00"
+
+                # Handle incomplete dates (e.g., "2024-06-0")
+                date_parts = date_part.split('-')
+                if len(date_parts) == 3:
+                    year = date_parts[0]
+                    month = date_parts[1].zfill(2)
+                    day = date_parts[2].zfill(2)
+                    # Remove any time component that might be in the day part
+                    day = day.split(' ')[0].split(':')[0]
+                    date_part = f"{year}-{month}-{day}"
+
+                # Handle time part
+                if ':' in time_part:
+                    time_parts = time_part.split(':')
+                    if len(time_parts) >= 2:
+                        hour = time_parts[0].zfill(2)
+                        minute = time_parts[1].zfill(2)
+                        time_part = f"{hour}:{minute}"
+                    else:
+                        time_part = "00:00"
+                else:
+                    time_part = "00:00"
+
+                # Combine date and time
+                timestamp_str = f"{date_part} {time_part}"
+                timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M')
+            elif isinstance(timestamp, pd.Timestamp):
+                timestamp = timestamp.to_pydatetime()
+            elif isinstance(timestamp, datetime):
+                pass
+            else:
+                raise ValueError(f"Invalid timestamp type: {type(timestamp)}")
+                
+            # Convert back to string in standard format
+            timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M')
+        except Exception as e:
+            logger.warning(f"Invalid timestamp format for {self.name}: {timestamp} - {str(e)}")
+            timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+            
         position = {
             'latitude': float(latitude),
             'longitude': float(longitude),
-            'timestamp': timestamp,
-            'sub_id': self.sub_id
+            'timestamp': timestamp_str,
+            'sub_id': self.sub_id,
+            'is_historical': is_historical,
+            'is_simulated': is_simulated,
+            'is_prediction': is_prediction
         }
         
         if depth is not None:
@@ -50,7 +106,12 @@ class Submarine:
         if speed is not None:
             position['speed'] = float(speed)
             
-        self.positions.append(position)
+        if is_historical:
+            self.historical_sightings.append(position)
+        elif is_prediction:
+            self.predicted_positions.append(position)
+        else:
+            self.positions.append(position)
         return position
     
     def _validate_position(self, latitude: float, longitude: float) -> bool:
@@ -64,29 +125,12 @@ class Submarine:
             if self._haversine_distance(latitude, longitude, base_lat, base_lon) < 5:
                 return True
                 
-        # Simplified check for major landmasses - would need a proper coastline check
-        # These are very rough bounding boxes for mainland China
-        if (20 < latitude < 45 and 105 < longitude < 124):
-            # Check if it's in the Gulf of Tonkin or Bohai Sea
-            if (18 < latitude < 21 and 107 < longitude < 109) or \
-               (37 < latitude < 41 and 118 < longitude < 122):
-                return True
-            return False  # Likely on land
+        # Basic bounds check for the region of interest
+        if (0 <= latitude <= 45 and 105 <= longitude <= 130):
+            return True
             
-        # Taiwan rough check
-        if (22 < latitude < 25.5 and 120 < longitude < 122):
-            return False  # Likely on Taiwan
-            
-        # Japan rough check
-        if (30 < latitude < 46 and 129 < longitude < 146):
-            return False  # Likely on Japan
-            
-        # Philippines rough check
-        if (5 < latitude < 19 and 117 < longitude < 127):
-            return False  # Likely on Philippines
-            
-        # By default, assume it's in water (this is very simplified)
-        return True
+        # If outside the region of interest, consider it invalid
+        return False
     
     def _find_nearest_valid_position(self, latitude: float, longitude: float):
         """Find the nearest valid position in water or at a naval base."""
@@ -169,6 +213,28 @@ class Submarine:
         """String representation of the submarine."""
         return f"Submarine(id={self.sub_id}, name={self.name}, positions={len(self.positions)})"
 
+    def load_historical_sightings(self, sightings_path: str) -> None:
+        """Load historical sightings from the monitoring CSV file."""
+        try:
+            if not os.path.exists(sightings_path):
+                logger.warning(f"Historical sightings file not found: {sightings_path}")
+                return
+            
+            df = pd.read_csv(sightings_path)
+            for _, row in df.iterrows():
+                self.add_position(
+                    latitude=row['latitude'],
+                    longitude=row['longitude'],
+                    timestamp=row['date'],
+                    is_historical=True
+                )
+            logger.info(f"Loaded {len(df)} historical sightings for submarine {self.sub_id}")
+        except Exception as e:
+            logger.error(f"Error loading historical sightings: {e}")
+
+    def get_all_positions(self) -> List[Dict[str, Any]]:
+        """Get all positions including historical sightings."""
+        return self.positions + self.historical_sightings
 
 def load_submarines_from_csv(file_path: Path) -> List[Submarine]:
     """Load submarine data from a CSV file."""
