@@ -1,598 +1,316 @@
-from __future__ import annotations
-import pandas as pd
-import math
-import numpy as np
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple, Optional, Union
-from functools import lru_cache
-from src.utils.geo_utils import (
-    haversine_distance,
-    calculate_bearing,
-    move_point,
-    calculate_current_drift,
-)
-from src.models.submarine import Submarine, build_submarines_with_bases_and_locations
+"""Prediction engine for Jin-class submarine tracking."""
 import random
+import numpy as np
+import logging
+from typing import List, Dict, Any, Tuple
+from datetime import datetime, timedelta
 
-# Earth's radius in kilometers (for distance/bearing calculations)
-EARTH_RADIUS_KM = 6371.0
+logger = logging.getLogger(__name__)
 
-# Speed limits for submarines (in knots)
-MIN_SPEED_KNOTS = 5.0  # Minimum patrol speed
-MAX_SPEED_KNOTS = 10.0  # Maximum patrol speed
-KNOTS_TO_KMH = 1.852  # Conversion factor from knots to km/h
+def monte_carlo_simulation(history: List[Dict], num_simulations: int = 500, 
+                          hours_ahead: int = 48, step_hours: int = 3) -> Dict:
+    """
+    Perform Monte Carlo simulation to predict submarine movement.
+    
+    Args:
+        history: List of historical position records
+        num_simulations: Number of simulations to run
+        hours_ahead: How many hours ahead to predict
+        step_hours: Time step for predictions in hours
+        
+    Returns:
+        Dictionary with prediction results
+    """
+    if not history or len(history) < 2:
+        logger.warning("Insufficient history for prediction")
+        return {
+            'central_path': [],
+            'forecast_path': [],
+            'forecast_times': [],
+            'confidence_rings': [],
+            'simulated_points': []
+        }
+    
+    # Sort history by timestamp
+    history = sorted(history, key=lambda x: x['timestamp'])
+    
+    # Calculate historical movement patterns
+    speeds = []
+    bearings = []
+    
+    for i in range(1, len(history)):
+        prev = history[i-1]
+        curr = history[i]
+        
+        # Calculate speed and bearing
+        speed, bearing = _calculate_movement(
+            prev['latitude'], prev['longitude'],
+            curr['latitude'], curr['longitude'],
+            _time_diff_hours(prev['timestamp'], curr['timestamp'])
+        )
+        
+        speeds.append(speed)
+        bearings.append(bearing)
+    
+    # Calculate mean and standard deviation of speed and bearing
+    mean_speed = np.mean(speeds) if speeds else 5.0  # Default 5 knots if no data
+    std_speed = np.std(speeds) if len(speeds) > 1 else 2.0
+    
+    # For bearing, we need to handle circular statistics
+    sin_bearings = np.sin(np.radians(bearings))
+    cos_bearings = np.cos(np.radians(bearings))
+    mean_bearing_rad = np.arctan2(np.mean(sin_bearings), np.mean(cos_bearings))
+    mean_bearing = np.degrees(mean_bearing_rad) % 360
+    
+    # Concentration parameter for von Mises distribution (approximation)
+    bearing_concentration = 1.0 / (np.std(bearings) if len(bearings) > 1 else 30.0)
+    
+    # Starting point for prediction
+    last_pos = history[-1]
+    start_lat = last_pos['latitude']
+    start_lon = last_pos['longitude']
+    
+    # Generate time steps
+    time_steps = list(range(step_hours, hours_ahead + 1, step_hours))
+    
+    # Run Monte Carlo simulations
+    all_simulations = []
+    
+    for _ in range(num_simulations):
+        path = [(start_lon, start_lat)]  # Start with the last known position
+        curr_lat, curr_lon = start_lat, start_lon
+        
+        for _ in time_steps:
+            # Sample speed from normal distribution
+            speed = max(0, np.random.normal(mean_speed, std_speed))
+            
+            # Sample bearing from von Mises distribution (approximation)
+            bearing = (np.random.normal(mean_bearing, 360 / (2 * np.pi * bearing_concentration))) % 360
+            
+            # Move the submarine
+            curr_lat, curr_lon = _move_point(curr_lat, curr_lon, speed * step_hours, bearing)
+            
+            # Ensure the point is in water (simplified check)
+            while not _is_in_water(curr_lat, curr_lon):
+                # Adjust bearing and try again
+                bearing = (bearing + 45) % 360
+                curr_lat, curr_lon = _move_point(curr_lat, curr_lon, speed * step_hours, bearing)
+            
+            path.append((curr_lon, curr_lat))
+        
+        all_simulations.append(path)
+    
+    # Calculate the central (most likely) path
+    central_path = [(start_lon, start_lat)]
+    
+    for i in range(1, len(time_steps) + 1):
+        # Get all positions at this time step from all simulations
+        positions = [sim[i] for sim in all_simulations]
+        
+        # Calculate centroid
+        avg_lon = sum(p[0] for p in positions) / len(positions)
+        avg_lat = sum(p[1] for p in positions) / len(positions)
+        
+        central_path.append((avg_lon, avg_lat))
+    
+    # Calculate confidence rings and collect simulated points
+    confidence_rings = []
+    simulated_points = []
+    
+    for i in range(1, len(time_steps) + 1):
+        positions = np.array([sim[i] for sim in all_simulations])
+        
+        # 67% confidence radius
+        radius_67 = _calculate_confidence_radius(positions, 0.67)
+        
+        # 90% confidence radius
+        radius_90 = _calculate_confidence_radius(positions, 0.90)
+        
+        confidence_rings.append({
+            'center': central_path[i],
+            'radius_67': radius_67,
+            'radius_90': radius_90
+        })
+        
+        # Store all simulated points for this step
+        simulated_points.append(positions.tolist())
+    
+    # Return prediction results
+    return {
+        'central_path': central_path,
+        'forecast_path': central_path[1:],  # Exclude starting point
+        'forecast_times': time_steps,
+        'confidence_rings': confidence_rings,
+        'simulated_points': simulated_points
+    }
 
-# Load submarine bases data (global, so only loaded once)
-BASES_CSV_PATH = "data/input/submarine_bases.csv"
-try:
-    _bases_df = pd.read_csv(BASES_CSV_PATH)
-    BASES_DICT = {row['id']: row for _, row in _bases_df.iterrows()}
-except Exception:
-    BASES_DICT = {}
+def _calculate_movement(lat1: float, lon1: float, lat2: float, lon2: float, 
+                       hours: float) -> Tuple[float, float]:
+    """Calculate speed (knots) and bearing (degrees) between two points."""
+    from math import radians, sin, cos, atan2, sqrt, degrees
+    
+    # Convert to radians
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula for distance
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    distance_km = 6371 * c  # Earth radius in km
+    
+    # Convert to nautical miles
+    distance_nm = distance_km / 1.852
+    
+    # Calculate speed in knots (nautical miles per hour)
+    speed = distance_nm / hours if hours > 0 else 0
+    
+    # Calculate bearing
+    y = sin(dlon) * cos(lat2)
+    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)
+    bearing = (degrees(atan2(y, x)) + 360) % 360
+    
+    return speed, bearing
 
-# Map submarine IDs to their home base ID (Yulin for Jin1-4)
-SUB_HOME_BASE = {
-    "Jin1": 1,
-    "Jin2": 1,
-    "Jin3": 1,
-    "Jin4": 1,
-    # Add more mappings as needed
-}
+def _time_diff_hours(time1: str, time2: str) -> float:
+    """Calculate time difference in hours between two timestamps."""
+    try:
+        # Convert pandas Timestamp to string if needed
+        if hasattr(time1, 'strftime'):
+            time1 = time1.strftime('%Y-%m-%d %H:%M:%S')
+        if hasattr(time2, 'strftime'):
+            time2 = time2.strftime('%Y-%m-%d %H:%M:%S')
+            
+        # Try different formats
+        formats = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d"
+        ]
+        
+        dt1 = None
+        dt2 = None
+        
+        for fmt in formats:
+            try:
+                dt1 = datetime.strptime(time1, fmt)
+                break
+            except ValueError:
+                continue
+                
+        for fmt in formats:
+            try:
+                dt2 = datetime.strptime(time2, fmt)
+                break
+            except ValueError:
+                continue
+        
+        if dt1 and dt2:
+            diff = dt2 - dt1
+            return diff.total_seconds() / 3600
+        else:
+            logger.warning(f"Could not parse timestamps: {time1}, {time2}")
+            return 1.0  # Default to 1 hour difference
+    except Exception as e:
+        logger.error(f"Error calculating time difference: {e}")
+        return 1.0
 
-# ────────────────────────────────────────────────────────────────────
-#  Ultra-light Ocean / Bathymetry model (≈2 km resolution mask)
-#  Any point whose depth < 150 m or is on land is forbidden.
-#  For production, swap this with ETOPO1, GEBCO, or Naval bathymetry.
-# ────────────────────────────────────────────────────────────────────
-_LON_MIN, _LON_MAX =  90.0, 140.0
-_LAT_MIN, _LAT_MAX =   5.0,  45.0
-_CELL   = 0.02                    # ≈2.2 km at the equator
-_Nx     = int((_LON_MAX-_LON_MIN)/_CELL) + 1
-_Ny     = int((_LAT_MAX-_LAT_MIN)/_CELL) + 1
-_bathy  = np.full((_Ny, _Nx), True, dtype=bool)  # True  = water&deep
-# hard-coded rectangles for land + shelves (<150 m)
-# mainland CN
-_bathy[(np.s_[:], np.s_[:])]  # placeholder; fill from raster in prod
+def _move_point(lat: float, lon: float, distance_nm: float, bearing: float) -> Tuple[float, float]:
+    """Move a point by a distance (nautical miles) in a direction (degrees)."""
+    from math import radians, sin, cos, asin, atan2, degrees
+    
+    # Convert to radians
+    lat1 = radians(lat)
+    lon1 = radians(lon)
+    bearing = radians(bearing)
+    
+    # Convert nautical miles to km
+    distance_km = distance_nm * 1.852
+    
+    # Earth radius in km
+    R = 6371.0
+    
+    # Calculate new position
+    lat2 = asin(sin(lat1) * cos(distance_km/R) + cos(lat1) * sin(distance_km/R) * cos(bearing))
+    lon2 = lon1 + atan2(sin(bearing) * sin(distance_km/R) * cos(lat1), 
+                        cos(distance_km/R) - sin(lat1) * sin(lat2))
+    
+    # Convert back to degrees
+    return degrees(lat2), degrees(lon2)
 
-# ---------------------------------------------------------------------
-#  Simplified bathymetry/land mask for China-centric Monte-Carlo
-#    – Returns True  => point is deep enough water for an SSBN
-#    – Returns False => point is on land or inside <100 m shelf
-#
-#  Rules (tuned for realism yet lenient enough for simulation):
-#  1. Hard land masks using generous coastal buffers (≈25 km ≈0.22°).
-#  2. Yellow-Sea & Taiwan-Strait shallows (<100 m) blocked out
-#     except for two "shipping lanes" wide enough to let subs pass.
-#  3. Everything south of 21° N in the South China Sea is treated
-#     as deep water – the basin is >1000 m almost everywhere.
-# ---------------------------------------------------------------------
-
-def _box(lat, lon, lat_min, lat_max, lon_min, lon_max) -> bool:
-    return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max
-
-_COAST_BUF = 0.22    # ≈25 km
-
-def _is_water(lat: float, lon: float) -> bool:
-    lat, lon = float(lat), float(lon)
-
-    # 1. Mainland China + Hainan + Vietnam + Philippines + Taiwan
-    # -----------------------------------------------------------
-    # Each region gets a bounding box grown by _COAST_BUF
-
-    # Mainland coast (rough) – Qingdao down to Guangxi
-    if _box(lat, lon, 20 - _COAST_BUF, 45 + _COAST_BUF,
-                     100 - _COAST_BUF, 123 + _COAST_BUF):
-        return False
-
-    # Hainan Island
-    if _box(lat, lon, 18 - _COAST_BUF, 20 + _COAST_BUF,
-                     108.5 - _COAST_BUF, 111 + _COAST_BUF):
-        return False
-
-    # Vietnam coast
-    if _box(lat, lon,  8 - _COAST_BUF, 23 + _COAST_BUF,
-                     102 - _COAST_BUF, 110 + _COAST_BUF):
-        return False
-
-    # Philippine archipelago
-    if _box(lat, lon,  5 - _COAST_BUF, 19 + _COAST_BUF,
-                     117 - _COAST_BUF, 127 + _COAST_BUF):
-        return False
-
-    # Taiwan
-    if _box(lat, lon, 21 - _COAST_BUF, 26 + _COAST_BUF,
-                     119 - _COAST_BUF, 123 + _COAST_BUF):
-        return False
-
-    # 2. Shallow basins we want to forbid (<100 m depth)
-    # -------------------------------------------------
-    #   • Yellow Sea north of 33 N is mostly <60 m
-    #   • Taiwan Strait (shallow but we allow two corridors)
-
-    # Yellow Sea / Bohai shallows (with one deep-water "corridor" east of 124 E)
-    if lat > 33 and _box(lat, lon, 33, 41, 118, 124):
-        if lon < 123:          # block most shallows
-            return False
-
-    # Taiwan Strait – forbid except a ~50 km-wide central channel
-    if _box(lat, lon, 22, 25, 118, 122):
-        if not (lon > 120.3 and lon < 120.8):
-            return False
-
-    # 3. Everything south of 21 N (South China Sea basin) = deep water
-    # ---------------------------------------------------------------
-    if lat < 21:
-        return True
-
-    # 4. Otherwise treat as water (western Pacific etc.)
-    # -------------------------------------------------
+def _is_in_water(lat: float, lon: float) -> bool:
+    """
+    Check if a point is in water (simplified).
+    This should be replaced with a proper check using coastline data.
+    """
+    # Simplified check for major landmasses - would need a proper coastline check
+    # These are very rough bounding boxes for mainland China
+    if (20 < lat < 45 and 105 < lon < 124):
+        # Check if it's in the Gulf of Tonkin or Bohai Sea
+        if (18 < lat < 21 and 107 < lon < 109) or \
+           (37 < lat < 41 and 118 < lon < 122):
+            return True
+        return False  # Likely on land
+        
+    # Taiwan rough check
+    if (22 < lat < 25.5 and 120 < lon < 122):
+        return False  # Likely on Taiwan
+        
+    # Japan rough check
+    if (30 < lat < 46 and 129 < lon < 146):
+        return False  # Likely on Japan
+        
+    # Philippines rough check
+    if (5 < lat < 19 and 117 < lon < 127):
+        return False  # Likely on Philippines
+        
+    # By default, assume it's in water (this is very simplified)
     return True
 
-# ────────────────────────────────────────────────────────────────────
-#  Vectorised, per-step stochastic Monte-Carlo
-# ────────────────────────────────────────────────────────────────────
-def monte_carlo_simulation(
-    *,
-    lat: float | None = None,
-    lon: float | None = None,
-    heading: float | None = None,
-    speed: float | None = None,
-    history: list[dict[str, Any]] | None = None,
-    hours_ahead: int = 24,
-    step_hours: int = 1,
-    num_simulations: int = 1_000,
-    heading_sigma: float = 5.0,       # ° per step (Gaussian)
-    speed_sigma: float = 0.05,        # 5 %  per step
-    heading_variation: float | None = None,  # Backward compatibility
-) -> dict[str, Any]:
+def _calculate_confidence_radius(positions: np.ndarray, confidence: float) -> float:
     """
-    High-fidelity Monte-Carlo forward model:
-    • Per-step Gaussian perturbations to heading & speed (correlated random walk)
-    • Surface-current drift vector added every step
-    • Hard rejection of paths that touch land or shallow shelf (<150 m)
-    • NumPy vectorisation: 1 000 runs × 25 steps ≈ 3 ms on laptop
-    """
-    # Handle backward compatibility
-    if heading_variation is not None:
-        heading_sigma = heading_variation / 3  # Convert max variation to sigma
-
-    # 0.  Seed state from history if provided
-    if history:
-        if len(history) < 2:
-            return {
-                "central_path": [[lon, lat]],
-                "left_path": [[lon, lat]],
-                "right_path": [[lon, lat]],
-                "forecast_times": [0],
-                "cone_polygon": [[lon, lat]],
-                "runs_kept": 0
-            }
-            
-        last, prev = history[-1], history[-2]
-        lat, lon   = last["latitude"],  last["longitude"]
-        dt_hr      = max(1.0, (last["timestamp"] - prev["timestamp"]).total_seconds()/3600)
-        speed      = max(MIN_SPEED_KNOTS,
-                         min(MAX_SPEED_KNOTS,
-                             haversine_distance(prev['latitude'], prev['longitude'],
-                                                lat, lon) / dt_hr / KNOTS_TO_KMH))
-        heading    = calculate_bearing(prev['latitude'], prev['longitude'], lat, lon)
-    else:
-        # Validate direct inputs
-        if lat is None or lon is None or heading is None or speed is None:
-            raise ValueError("Must provide either history or all of lat/lon/heading/speed")
-
-    # Check if starting point is in water
-    if not _is_water(lat, lon):
-        return {
-            "central_path": [[lon, lat]],
-            "left_path": [[lon, lat]],
-            "right_path": [[lon, lat]],
-            "forecast_times": [0],
-            "cone_polygon": [[lon, lat]],
-            "runs_kept": 0
-        }
-
-    # 1.  Pre-allocate arrays  (shape = N runs × N steps+1)
-    N   = num_simulations
-    S   = int(hours_ahead/step_hours)
-    lats = np.empty((N, S+1), dtype=float)
-    lons = np.empty_like(lats)
-    lats[:,0], lons[:,0] = lat, lon      # broadcast seed
-
-    # 2.  Draw step-wise random perturbations
-    rng = np.random.default_rng()
-    hdg  = np.full((N,), heading, dtype=float)  # Ensure float type
-    spd  = np.full((N,), speed, dtype=float)    # Ensure float type
-
-    # Track valid runs
-    valid_mask = np.ones(N, dtype=bool)
-
-    for s in range(1, S+1):
-        # Only update valid paths
-        n_valid = np.sum(valid_mask)
-        if n_valid == 0:
-            break
-
-        # correlated random walk for valid paths
-        hdg[valid_mask] += rng.normal(0, heading_sigma, n_valid)
-        hdg[valid_mask] = hdg[valid_mask] % 360  # Wrap heading to [0, 360)
-        
-        spd[valid_mask] *= rng.normal(1.0, speed_sigma, n_valid)
-        spd[valid_mask] = np.clip(spd[valid_mask], MIN_SPEED_KNOTS, MAX_SPEED_KNOTS)
-
-        dist = spd * KNOTS_TO_KMH * step_hours
-        
-        # Get current drift based on position
-        cur_x, cur_y = calculate_current_drift(lats[valid_mask,s-1], lons[valid_mask,s-1])
-        
-        # move valid paths in parallel
-        φ1 = np.radians(lats[valid_mask,s-1])
-        λ1 = np.radians(lons[valid_mask,s-1])
-        θ = np.radians(hdg[valid_mask])
-        δ = dist[valid_mask] / EARTH_RADIUS_KM
-        
-        sinφ1, cosφ1 = np.sin(φ1), np.cos(φ1)
-        sinδ,  cosδ  = np.sin(δ),  np.cos(δ)
-
-        φ2 = np.arcsin(sinφ1*cosδ + cosφ1*sinδ*np.cos(θ))
-        λ2 = λ1 + np.arctan2(np.sin(θ)*sinδ*cosφ1, cosδ - sinφ1*np.sin(φ2))
-        
-        # Apply current drift
-        lats[valid_mask,s] = np.degrees(φ2) + cur_y * step_hours
-        lons[valid_mask,s] = (np.degrees(λ2) + 540) % 360 - 180 + cur_x * step_hours
-
-        # Mark invalid paths
-        new_mask = np.vectorize(_is_water)(lats[valid_mask,s], lons[valid_mask,s])
-        valid_mask[valid_mask] = new_mask
-        
-        # Fill invalid paths with NaN
-        invalid_mask = ~valid_mask
-        if np.any(invalid_mask):
-            lats[invalid_mask,s:] = np.nan
-            lons[invalid_mask,s:] = np.nan
-
-    # 3.  Aggregate – ignore NaNs
-    runs_kept = np.sum(valid_mask)
-    if runs_kept == 0:
-        return {
-            "central_path": [[lon, lat]],
-            "left_path": [[lon, lat]],
-            "right_path": [[lon, lat]],
-            "forecast_times": [0],
-            "cone_polygon": [[lon, lat]],
-            "runs_kept": 0
-        }
-
-    # Only use valid paths for statistics
-    valid_lats = lats[valid_mask]
-    valid_lons = lons[valid_mask]
-
-    central_lat = np.nanmean(valid_lats, axis=0)
-    central_lon = np.nanmean(valid_lons, axis=0)
-    left_lon    = np.nanpercentile(valid_lons,  5, axis=0)
-    left_lat    = np.nanpercentile(valid_lats,  5, axis=0)
-    right_lon   = np.nanpercentile(valid_lons, 95, axis=0)
-    right_lat   = np.nanpercentile(valid_lats, 95, axis=0)
-
-    central_path = list(map(list, zip(central_lon, central_lat)))
-    left_path    = list(map(list, zip(left_lon,    left_lat)))
-    right_path   = list(map(list, zip(right_lon,   right_lat)))
-
-    cone_polygon = right_path + left_path[::-1]
-    if cone_polygon[0]!=cone_polygon[-1]:
-        cone_polygon.append(cone_polygon[0])
+    Calculate radius for a given confidence level using distance from centroid.
     
-    return {
-        "central_path":  central_path,
-        "left_path":     left_path,
-        "right_path":    right_path,
-        "forecast_times":[s*step_hours for s in range(S+1)],
-        "cone_polygon":  cone_polygon,
-        "runs_kept":     int(runs_kept),
-    }
-
-def forecast_path(
-    history: List[Dict[str, Any]],
-    hours_ahead: int = 24,
-    step_hours: int = 1,
-    heading_variation: float = 15.0,
-) -> Dict[str, Any]:
-    """Forecast a future path for a submarine given its historical positions.
-    
-    Parameters
-    ----------
-    history : List[Dict[str, Any]]
-        List of historical position records, each containing at least 'latitude' and 'longitude'.
-        Optional 'timestamp' field for speed calculation.
-    hours_ahead : int, default 24
-        Number of hours to forecast into the future.
-    step_hours : int, default 1
-        Time step between forecast points in hours.
-    heading_variation : float, default 15.0
-        Maximum variation in degrees from the base heading for uncertainty paths.
+    Args:
+        positions: Array of (lon, lat) positions
+        confidence: Confidence level (0-1)
         
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary containing:
-        - central_path: List of [lon, lat] points for the most likely path
-        - left_path: List of [lon, lat] points for the left uncertainty boundary
-        - right_path: List of [lon, lat] points for the right uncertainty boundary
-        - forecast_times: List of hours from start for each point
-        - cone_polygon: List of [lon, lat] points forming the uncertainty cone polygon
-        
-    Raises
-    ------
-    ValueError
-        If step_hours is not positive or hours_ahead is negative.
+    Returns:
+        Radius in kilometers for the given confidence level
     """
-    if step_hours <= 0:
-        raise ValueError("step_hours must be positive")
-    if hours_ahead < 0:
-        raise ValueError("hours_ahead must be non-negative")
-        
-    if not history or len(history) < 2:
-        # Not enough data to compute heading/speed, return minimal info
-        if history and "latitude" in history[-1] and "longitude" in history[-1]:
-            init_lat = history[-1]["latitude"]
-            init_lon = history[-1]["longitude"]
-        else:
-            return {}
-
-        # Only current position available, so no movement forecast
-        central_path = [[init_lon, init_lat]]
-        left_path = [[init_lon, init_lat]]
-        right_path = [[init_lon, init_lat]]
-        forecast_times = [0]
-        cone_polygon = None
-
-        return {
-            "central_path": central_path,
-            "left_path": left_path,
-            "right_path": right_path,
-            "forecast_times": forecast_times,
-            "cone_polygon": cone_polygon,
-        }
-
-    # Use the last two known points to estimate speed and bearing
-    last_point = history[-1]
-    prev_point = history[-2]
-    lat1, lon1 = prev_point["latitude"], prev_point["longitude"]
-    lat2, lon2 = last_point["latitude"], last_point["longitude"]
-
-    # Calculate time difference in hours (if timestamps present)
-    if "timestamp" in last_point and "timestamp" in prev_point:
-        td = last_point["timestamp"] - prev_point["timestamp"]
-        time_diff_hours = td.total_seconds() / 3600.0 if td.total_seconds() > 0 else 1.0
-    else:
-        time_diff_hours = 1.0
-
-    # Compute speed (km/h)
-    distance_km = haversine_distance(lat1, lon1, lat2, lon2)
-    speed_kmh = distance_km / time_diff_hours if time_diff_hours > 0 else 0.0
-
-    # Convert to knots and clamp to realistic submarine speeds
-    speed_knots = max(MIN_SPEED_KNOTS, min(MAX_SPEED_KNOTS, speed_kmh / KNOTS_TO_KMH))
-    speed_kmh = speed_knots * KNOTS_TO_KMH
-
-    # Compute base bearing
-    bearing_deg = calculate_bearing(lat1, lon1, lat2, lon2)
-
-    # Define bearings for left and right uncertainty paths
-    bearing_left = (bearing_deg + heading_variation) % 360
-    bearing_right = (bearing_deg - heading_variation + 360) % 360
-
-    # Determine number of forecast steps
-    steps = max(1, math.ceil(hours_ahead / step_hours))
-
-    # Initialize paths with current position
-    init_lat, init_lon = lat2, lon2
-    central_path = [[init_lon, init_lat]]
-    left_path = [[init_lon, init_lat]]
-    right_path = [[init_lon, init_lat]]
-    forecast_times = [0]
-
-    # Simulate forward for each step
-    for step in range(1, steps + 1):
-        # Distance traveled in this step (km)
-        distance = speed_kmh * step_hours
-
-        # Move points along each bearing
-        new_lat, new_lon = move_point(init_lat, init_lon, bearing_deg, distance)
-        new_lat_L, new_lon_L = move_point(init_lat, init_lon, bearing_left, distance)
-        new_lat_R, new_lon_R = move_point(init_lat, init_lon, bearing_right, distance)
-
-        # Append new points to paths
-        central_path.append([new_lon, new_lat])
-        left_path.append([new_lon_L, new_lat_L])
-        right_path.append([new_lon_R, new_lat_R])
-
-        # Advance the reference point for next iteration
-        init_lat, init_lon = new_lat, new_lon
-        forecast_times.append(step * step_hours)
-
-    # Build the uncertainty cone polygon
-    cone_polygon = right_path + left_path[::-1]
-    if cone_polygon and cone_polygon[0] != cone_polygon[-1]:
-        cone_polygon.append(cone_polygon[0])
-
-    return {
-        "central_path": central_path,
-        "left_path": left_path,
-        "right_path": right_path,
-        "forecast_times": forecast_times,
-        "cone_polygon": cone_polygon,
-    }
-
-def forecast_all_subs(
-    data: Union[List[Dict[str, Any]], pd.DataFrame, Dict[str, Submarine]],
-    hours_ahead: int = 24,
-    step_hours: int = 1,
-    heading_variation: float = 15.0,
-) -> Dict[Any, Dict[str, Any]]:
-    """Generate forecasts for multiple submarines.
+    # Calculate centroid
+    centroid = np.mean(positions, axis=0)
     
-    Parameters
-    ----------
-    data : Union[List[Dict[str, Any]], pd.DataFrame, Dict[str, Submarine]]
-        List of submarine position records, a pandas DataFrame, or a dictionary of Submarine objects.
-        Each record should contain at least 'latitude' and 'longitude'.
-        Must have an identifier field ('id', 'submarine_id', or 'name').
-    hours_ahead : int, default 24
-        Number of hours to forecast into the future.
-    step_hours : int, default 1
-        Time step between forecast points in hours.
-    heading_variation : float, default 15.0
-        Maximum variation in degrees from the base heading for uncertainty paths.
-        
-    Returns
-    -------
-    Dict[Any, Dict[str, Any]]
-        Dictionary mapping submarine IDs to their forecast paths.
-        Each forecast follows the same structure as forecast_path().
-        
-    Raises
-    ------
-    ValueError
-        If data cannot be converted to a list of dictionaries.
-    """
-    # Handle different input types
-    if isinstance(data, dict) and all(isinstance(v, Submarine) for v in data.values()):
-        # Already have Submarine objects, extract histories
-        history_by_sub = {sub_id: sub.history for sub_id, sub in data.items()}
-    else:
-        # Convert to list of dicts if needed
-        if not isinstance(data, list):
-            try:
-                data = data.to_dict("records")
-            except Exception as e:
-                raise ValueError(f"Data must be a list of dicts, DataFrame, or dict of Submarine objects: {e}")
-
-        # Group records by submarine ID
-        history_by_sub: Dict[Any, List[Dict[str, Any]]] = {}
-        for record in data:
-            sub_id = record.get("id") or record.get("submarine_id") or record.get("name") or record.get("sub_id")
-            if sub_id is None:
-                continue
-            history_by_sub.setdefault(sub_id, []).append(record)
-
-        # Sort each sub's history by timestamp if available
-        for records in history_by_sub.values():
-            records.sort(key=lambda x: x.get("timestamp", 0))
-
-    # Ensure all home-based subs are included, even if no history
-    all_sub_ids = set(history_by_sub.keys()) | set(SUB_HOME_BASE.keys())
-    results = {}
-    for sub_id in all_sub_ids:
-        records = history_by_sub.get(sub_id, [])
-        if len(records) < 2:
-            # Use base as fallback origin if mapped
-            base_id = SUB_HOME_BASE.get(sub_id)
-            base = BASES_DICT.get(base_id)
-            if base is not None:
-                forecast = monte_carlo_simulation(
-                    lat=base['latitude'],
-                    lon=base['longitude'],
-                    heading=0,  # Default heading (could be randomized or improved)
-                    speed=MIN_SPEED_KNOTS,  # Default speed
-                    hours_ahead=hours_ahead,
-                    step_hours=step_hours,
-                    num_simulations=1000,
-                    heading_sigma=heading_variation/3
-                )
-            else:
-                # No base info, return empty or default
-                forecast = {
-                    "central_path": [],
-                    "left_path": [],
-                    "right_path": [],
-                    "forecast_times": [],
-                    "cone_polygon": [],
-                    "runs_kept": 0
-                }
-        else:
-            forecast = monte_carlo_simulation(
-                history=records,
-                hours_ahead=hours_ahead,
-                step_hours=step_hours,
-                heading_sigma=heading_variation/3,  # Convert max variation to sigma
-                num_simulations=1000
-            )
-        results[sub_id] = forecast
-    return results
-
-######################### Monte‑Carlo module #########################
-
-def _generate_random_points(
-    lat: float,
-    lon: float,
-    radius_km: float,
-    num_points: int,
-    rng: np.random.Generator
-) -> np.ndarray:
-    """Generate random points within a radius of a center point.
+    # Calculate distances from centroid
+    distances = []
+    for pos in positions:
+        lon1, lat1 = centroid
+        lon2, lat2 = pos
+        distances.append(_haversine_distance(lat1, lon1, lat2, lon2))
     
-    Parameters
-    ----------
-    lat, lon : float
-        Centre point in decimal degrees.
-    radius_km : float
-        Maximum great‑circle distance of generated points from the centre.
-    num_points : int
-        Number of points to generate.
-    rng : numpy.random.Generator
-        Random number generator to use.
-        
-    Returns
-    -------
-    np.ndarray, shape (N, 2)
-        Column‑stacked array where `[:,0]` are latitudes and `[:,1]` longitudes.
-    """
-    earth_radius_km = 6371.0
-    max_ang = radius_km / earth_radius_km  # radians
-
-    # sample points uniformly on a spherical cap
-    cos_max = np.cos(max_ang)
-    u = rng.uniform(cos_max, 1.0, num_points)
-    phi = rng.uniform(0.0, 2.0 * np.pi, num_points)
-    w = np.arccos(u)
-
-    sin_w = np.sin(w)
-    lat0 = np.radians(lat)
-    lon0 = np.radians(lon)
-
-    new_lat = np.arcsin(
-        np.sin(lat0) * np.cos(w) + np.cos(lat0) * sin_w * np.cos(phi)
-    )
-    new_lon = lon0 + np.arctan2(
-        sin_w * np.sin(phi),
-        np.cos(lat0) * np.cos(w) - np.sin(lat0) * sin_w * np.cos(phi),
-    )
-
-    lats = np.degrees(new_lat)
-    lons = (np.degrees(new_lon) + 540.0) % 360.0 - 180.0  # wrap to [-180, 180]
-
-    return np.column_stack((lats, lons))
-
-def monte_carlo_simulation_center(
-    center: Tuple[float, float],
-    radius_km: float = 5.0,
-    **kwargs: Any
-) -> List[Dict[str, Any]]:
-    """Backward‑compat wrapper: accepts a `(lat, lon)` tuple as the first arg.
+    # Sort distances
+    distances.sort()
     
-    Parameters
-    ----------
-    center : Tuple[float, float]
-        Centre point as (latitude, longitude) tuple.
-    radius_km : float, default 5.0
-        Maximum great‑circle distance of generated points from the centre.
-    **kwargs : Any
-        Additional arguments passed to monte_carlo_simulation.
-        
-    Returns
-    -------
-    List[Dict[str, Any]]
-        List of dictionaries containing point information.
-    """
-    return monte_carlo_simulation(lat=center[0], lon=center[1], radius_km=radius_km, **kwargs)
+    # Get the index for the desired confidence level
+    idx = int(len(distances) * confidence)
+    
+    # Return the radius
+    return distances[idx]
+
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate the great circle distance between two points on earth."""
+    from math import radians, sin, cos, sqrt, atan2
+    
+    # Convert decimal degrees to radians
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    r = 6371  # Radius of earth in kilometers
+    
+    return c * r

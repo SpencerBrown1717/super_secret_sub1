@@ -1,138 +1,58 @@
 """
-Main script to orchestrate data ingestion, forecasting, and visualization for Jin-class submarine tracker.
+Jin-class submarine tracker main entry point.
 """
-import os
-import argparse
-from datetime import datetime
+from pathlib import Path
 import pandas as pd
-import warnings
-import importlib
-import random
-import logging
-from src.models.submarine import Submarine
+import argparse
+import sys
+import os
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
+# Fix imports by making them absolute instead of relative
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.ingestion.data_loader import load_data
+from src.models.submarine import load_submarines_from_csv
+from src.models.fleet import FLEET
+from src.visualization import leaflet_mapper
 
-# Filter out Pydantic AliasGenerator warning
-warnings.filterwarnings(
-    "ignore",
-    message="cannot import name 'AliasGenerator' from 'pydantic'",
-)
-
-def _parse_args(argv=None):
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Jin-class submarine tracker")
-    parser.add_argument("--input", type=str, default="data/input/submarine_tracking.csv")
-    parser.add_argument("--output", type=str, default="data/output/jin_forecast_map.html")
-    parser.add_argument("--simulate", action="store_true", help="Use simulated data instead of loading from file")
-    parser.add_argument("--num-subs", type=int, default=6)
-    parser.add_argument("--num-simulations", type=int, default=100)
-    return parser.parse_args(argv)
+    parser.add_argument("--input", dest="input_path", help="Input CSV file path", required=True)
+    parser.add_argument("--output", dest="output_path", help="Output HTML file path", required=True)
+    parser.add_argument("--confidence-rings", type=int, default=3, help="Number of confidence rings to display")
+    return parser.parse_args()
 
-def main(argv: list[str] | None = None) -> None:
-    args = _parse_args(argv)
-    log.info("Starting submarine tracker with args: %s", args)
+def run(input_path: Path, output_path: Path, confidence_rings: int = 3):
+    """Main processing function that tests can call directly."""
+    # Load data
+    df = load_data(input_path)
     
-    # ---------- data ingest ----------
-    if getattr(args, "simulate", False):
-        log.info("Using simulated data")
-        fleet_df = create_simulated_data(getattr(args, "num_subs", 6))
-    else:
-        try:
-            log.info("Loading data from %s", args.input)
-            load_data = importlib.import_module("src.ingestion").load_data
-            fleet_df = load_data(args.input)
-            log.info("Loaded %d records", len(fleet_df))
-        except Exception as exc:
-            log.error("Data load failed: %s", exc)
-            return
-
-    # ---------- submarine state validation ----------
-    # Build Submarine objects and validated histories
-    subs = {}
-    for record in fleet_df.to_dict("records"):
-        sub_id = record.get("sub_id") or record.get("id") or "Unknown"
-        if sub_id not in subs:
-            subs[sub_id] = Submarine(sub_id)
-        try:
-            subs[sub_id].update_from_record(record)
-        except Exception as e:
-            log.error(f"Skipping invalid record for {sub_id}: {e}")
+    # Process data
+    submarines = load_submarines_from_csv(input_path)
+    FLEET.update_from_records(df.to_dict("records"))
     
-    log.info("Processed %d submarines", len(subs))
+    # Create output directory if it doesn't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Prepare validated histories for prediction
-    validated_histories = []
-    for sub in subs.values():
-        for rec in sub.history:
-            # Ensure all required fields are present for prediction
-            rec = rec.copy()
-            rec["latitude"] = sub.last_lat if rec.get("latitude") is None else rec["latitude"]
-            rec["longitude"] = sub.last_lon if rec.get("longitude") is None else rec["longitude"]
-            rec["timestamp"] = sub.last_time if rec.get("timestamp") is None else rec["timestamp"]
-            validated_histories.append(rec)
+    # Generate the map
+    leaflet_mapper.create_leaflet_map(df, output_path)
+    print(f"Map created successfully at {output_path}")
+
+def main(**kw):
+    """CLI wrapper that delegates to run() so tests can call with kwargs."""
+    args = kw or vars(parse_args())
     
-    log.info("Prepared %d validated records for prediction", len(validated_histories))
-
-    # ---------- analytics ----------
-    forecast_all_subs = importlib.import_module("src.models").forecast_all_subs
-    try:
-        forecasts = forecast_all_subs(validated_histories)
-        log.info("Generated forecasts for %d submarines", len(forecasts))
-    except Exception as e:
-        log.error("Forecast generation failed: %s", e)
-        return
-
-    # ---------- build combined data for visualization ----------
-    # Group histories by sub_id
-    histories_by_sub = {}
-    for rec in validated_histories:
-        sub_id = rec.get("sub_id") or rec.get("id") or rec.get("name")
-        if sub_id is None:
-            continue
-        histories_by_sub.setdefault(sub_id, []).append(rec)
-    # Build combined dict
-    viz_data = {}
-    for sub_id, forecast in forecasts.items():
-        # Get historical path for this sub
-        history = histories_by_sub.get(sub_id, [])
-        history_path = [[r["longitude"], r["latitude"]] for r in history]
-        # Forecast path: skip the first point (last historical)
-        forecast_path = forecast["central_path"][1:] if len(forecast["central_path"]) > 1 else []
-        viz_data[sub_id] = {
-            **forecast,
-            "history_path": history_path,
-            "forecast_path": forecast_path,
-        }
-
-    # ---------- visualization ----------
-    try:
-        log.info("Creating visualization at %s", args.output)
-        visualize = importlib.import_module("src.visualization").visualize
-        visualize(viz_data, args.output)
-        log.info("Visualization completed successfully")
-    except Exception as e:
-        log.error("Visualization failed: %s", e)
-        return
-
-    log.info("Processing completed successfully")
-
-def create_simulated_data(num_subs: int = 6) -> pd.DataFrame:
-    """Return a DataFrame with a single 'departure' row per simulated sub."""
-    rows = []
-    for i in range(num_subs):
-        rows.append(
-            {
-                "sub_id": f"Jin{i+1}",
-                "sub_type": "Type094",
-                "latitude": random.uniform(10.0, 20.0),
-                "longitude": random.uniform(105.0, 115.0),
-                "timestamp": datetime.utcnow(),
-                "event_type": "departure",
-            }
-        )
-    return pd.DataFrame(rows)
+    # Ensure input and output paths are provided
+    if not args.get("input_path") or not args.get("output_path"):
+        print("Error: Both input and output paths are required.")
+        print("Use --input and --output arguments to specify paths.")
+        sys.exit(1)
+    
+    run(
+        Path(args["input_path"]), 
+        Path(args["output_path"]),
+        args.get("confidence_rings", 3)
+    )
 
 if __name__ == "__main__":
     main()

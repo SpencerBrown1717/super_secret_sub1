@@ -3,8 +3,13 @@ Data ingestion module for Jin-class submarine tracker.
 Provides functions to load submarine tracking data from CSV files or APIs.
 Supports easy extension to new data sources.
 """
+from datetime import datetime
 import pandas as pd
+import logging
+import json
 import requests
+from pathlib import Path
+from typing import Union, List, Dict, Any, Optional
 
 # --- constants ---------------------------------------------------------------
 JIN_SUBMARINES = ["Jin1", "Jin2", "Jin3", "Jin4", "Jin5", "Jin6"]
@@ -136,24 +141,27 @@ def fetch_api_data(api_url: str, params: dict = None, target_subs: list = None) 
     
     return df
 
-def load_data(source: str, target_subs: list = None) -> pd.DataFrame:
+def load_data(source: Union[str, Path], target_subs: list = None) -> pd.DataFrame:
     """
     Load data from a source which can be a CSV file path or API URL.
     Returns a filtered DataFrame containing only Jin-class submarines.
-    
+
     Parameters:
-        source (str): Path to CSV file or API URL
+        source (Union[str, Path]): Path to CSV file or API URL
         target_subs (list, optional): List of submarine IDs to filter on.
                                       If None, defaults to JIN_CLASS_IDS.
     """
     # Use default Jin-class IDs if no specific targets provided
     if target_subs is None:
         target_subs = JIN_SUBMARINES
-    
+
+    # Convert Path to string if needed
+    source_str = str(source)
+
     # Check if source is a file path or URL
-    if source.startswith('http'):
-        df = fetch_api_data(source, target_subs=target_subs)
+    if source_str.startswith('http'):
+        df = fetch_api_data(source_str, target_subs=target_subs)
     else:
-        df = load_csv_data(source, target_subs=target_subs)
+        df = load_csv_data(source_str, target_subs=target_subs)
     
     return df 
