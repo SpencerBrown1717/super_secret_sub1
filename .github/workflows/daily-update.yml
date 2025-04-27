@@ -24,7 +24,7 @@ jobs:
         
     - name: Run forecast update
       run: |
-        python src/main.py --viz deckgl --output docs/index.html
+        python src/main.py --viz leaflet --output docs/index.html
         
     - name: Commit and push changes
       run: |

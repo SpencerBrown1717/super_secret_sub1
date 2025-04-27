@@ -46,3 +46,22 @@ data/output/*
 # Local development
 .env
 .env.local
+
+# Ignore environment variable files
+.env
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Coverage reports
+htmlcov/
+.coverage
+.tox/
+
+# Build artifacts
+*.manifest
+*.spec
+pip-wheel-metadata/

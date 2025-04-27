@@ -1,7 +1,7 @@
 """
 Helpers for checking whether a point lies in China's "close" coastal waters.
 
-⚠️  CHINA_COASTAL_BOUNDARY is (lon, lat) because deck.gl / Folium want that.
+⚠️  CHINA_COASTAL_BOUNDARY is (lon, lat) because Leaflet wants that.
     All public helpers still accept the friendlier (lat, lon) signature.
 """
 

@@ -16,6 +16,7 @@ def mock_args():
         heading_var = 15.0
         monte_carlo = False
         simulate = False
+        num_simulations = 100  # Changed from runs to num_simulations
     return Args()
 
 @pytest.fixture
@@ -78,7 +79,7 @@ def test_create_simulated_data():
 
 @patch('argparse.ArgumentParser.parse_args')
 @patch('src.ingestion.load_data')
-@patch('src.visualization.deckgl_mapper.create_map')
+@patch('src.visualization.leaflet_mapper.create_leaflet_map')
 def test_main_with_csv_input(mock_create_map, mock_load_data, mock_parse_args, mock_args, sample_submarine_data):
     """Test main function with CSV input."""
     # Setup mocks
@@ -94,7 +95,7 @@ def test_main_with_csv_input(mock_create_map, mock_load_data, mock_parse_args, m
     mock_create_map.assert_called_once()
 
 @patch('argparse.ArgumentParser.parse_args')
-@patch('src.visualization.deckgl_mapper.create_map')
+@patch('src.visualization.leaflet_mapper.create_leaflet_map')
 def test_main_with_simulated_data(mock_create_map, mock_parse_args, mock_args):
     """Test main function with simulated data."""
     # Setup mocks
@@ -112,14 +113,20 @@ def test_main_with_simulated_data(mock_create_map, mock_parse_args, mock_args):
 @patch('argparse.ArgumentParser.parse_args')
 @patch('src.ingestion.load_data')
 @patch('src.models.prediction.monte_carlo_simulation')
-@patch('src.visualization.deckgl_mapper.create_map')
+@patch('src.visualization.leaflet_mapper.create_leaflet_map')
 def test_main_with_monte_carlo(mock_create_map, mock_monte_carlo, mock_load_data, mock_parse_args, mock_args, sample_submarine_data):
     """Test main function with Monte Carlo simulation."""
     # Setup mocks
     mock_args.monte_carlo = True
     mock_parse_args.return_value = mock_args
     mock_load_data.return_value = sample_submarine_data
-    mock_monte_carlo.return_value = [{'lat': 15.1, 'lon': 110.1, 'time': datetime.now(), 'radius_km': 5.0}]
+    mock_monte_carlo.return_value = {
+        'central_path': [[110.1, 15.1], [110.2, 15.2]],
+        'left_path': [[110.0, 15.0], [110.1, 15.1]],
+        'right_path': [[110.2, 15.2], [110.3, 15.3]],
+        'forecast_times': [0, 6],
+        'cone_polygon': [[110.0, 15.0], [110.3, 15.3], [110.1, 15.1]]
+    }
     mock_create_map.return_value = Mock()
     
     # Run main

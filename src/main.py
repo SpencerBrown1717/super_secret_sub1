@@ -36,7 +36,7 @@ def _parse_args(argv=None):
     parser.add_argument("--simulate", action="store_true",
                         help="Use simulated data if no real data available")
     parser.add_argument("--num-subs", type=int, default=6)
-    parser.add_argument("--runs", type=int, default=100)   # tests use .runs
+    parser.add_argument("--num-simulations", type=int, default=100)   # Changed from runs to num_simulations
     return parser.parse_args(argv)
 
 def main(argv: list[str] | None = None) -> None:
@@ -55,22 +55,36 @@ def main(argv: list[str] | None = None) -> None:
 
     # ---------- analytics ----------
     if getattr(args, "monte_carlo", False):
-        mc_sim = importlib.import_module(
-            "src.models.prediction"
-        ).monte_carlo_simulation
-        forecasts = mc_sim(
-            fleet_df,
-            runs=getattr(args, "runs", 100)
-        )
+        # Convert DataFrame to list of records
+        records = fleet_df.to_dict("records")
+        
+        # Group records by submarine ID
+        history_by_sub = {}
+        for record in records:
+            sub_id = record.get("sub_id") or record.get("id") or "Unknown"
+            history_by_sub.setdefault(sub_id, []).append(record)
+            
+        # Generate forecasts for each submarine
+        forecasts = {}
+        for sub_id, history in history_by_sub.items():
+            monte_carlo_simulation = importlib.import_module("src.models.prediction").monte_carlo_simulation
+            forecast = monte_carlo_simulation(
+                history=history,
+                hours_ahead=args.hours_ahead,
+                step_hours=args.step_hours,
+                num_simulations=args.num_simulations
+            )
+            if forecast:  # Only add if forecast was generated
+                forecasts[sub_id] = forecast
     else:
         forecast_all_subs = importlib.import_module("src.models").forecast_all_subs
         forecasts = forecast_all_subs(fleet_df)
 
     # ---------- visualization ----------
-    create_map = importlib.import_module(
-        "src.visualization.deckgl_mapper"
-    ).create_map
-    create_map(forecasts, getattr(args, "output", "map.html"))
+    create_leaflet_map = importlib.import_module(
+        "src.visualization.leaflet_mapper"
+    ).create_leaflet_map
+    create_leaflet_map(forecasts, args.output)
 
 def create_simulated_data(num_subs: int = 6) -> pd.DataFrame:
     """Return a DataFrame with a single 'departure' row per simulated sub."""

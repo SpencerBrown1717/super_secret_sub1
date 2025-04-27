@@ -1,6 +1,8 @@
 import math
 from typing import Tuple
 from .china_coastal_boundary import clamp_to_china_coastal
+from datetime import datetime
+import numpy as np
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -51,3 +53,54 @@ def move_point(lat: float, lon: float, bearing: float, distance_km: float) -> Tu
     new_lon = math.degrees(lon2)
     new_lon = (new_lon + 180) % 360 - 180
     return clamp_to_china_coastal(new_lat, new_lon)
+
+def calculate_current_drift(lat, lon, month=None):
+    """Calculate the current drift based on latitude and longitude.
+    
+    This function models a simplified version of ocean currents, with:
+    - Stronger currents near the equator (Equatorial Counter Current)
+    - Weaker seasonal variations
+    - Very reduced effect at higher latitudes
+    - More variable current directions
+    
+    Args:
+        lat (float or np.ndarray): Latitude in degrees
+        lon (float or np.ndarray): Longitude in degrees
+        month (int, optional): Month of the year (1-12). Defaults to current month.
+    
+    Returns:
+        tuple: (x_drift, y_drift) in km/h
+    """
+    if month is None:
+        month = datetime.now().month
+    
+    # Convert inputs to numpy arrays if they aren't already
+    lat = np.array(lat)
+    lon = np.array(lon)
+    
+    # Reduced base strength (0.15 km/h maximum)
+    base_strength = 0.15
+    
+    # Weaker seasonal factor (only 20% variation)
+    seasonal_factor = 0.8 + 0.2 * np.abs(np.cos(2 * np.pi * (month - 1) / 12))
+    
+    # Sharper latitude factor (stronger decay away from equator)
+    # Using σ=10° instead of 15° for faster decay
+    lat_factor = np.exp(-((lat - 0) ** 2) / (2 * 10 ** 2))
+    
+    # Additional latitude-dependent factor to further reduce drift at higher latitudes
+    high_lat_reduction = 1.0 / (1.0 + (np.abs(lat) / 20.0) ** 2)
+    
+    # Calculate base drift strength
+    strength = base_strength * seasonal_factor * lat_factor * high_lat_reduction
+    
+    # Make drift direction more latitude-dependent
+    # Near equator: mostly eastward
+    # Higher latitudes: more variable direction
+    eastward_ratio = np.exp(-((np.abs(lat) - 0) ** 2) / (2 * 5 ** 2))  # Peaks at equator
+    
+    # Calculate drift components with more variation
+    x_drift = strength * (0.7 * eastward_ratio + 0.3)  # Minimum 30% eastward component
+    y_drift = strength * 0.15 * np.sign(lat)  # Reduced meridional component
+    
+    return x_drift, y_drift

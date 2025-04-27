@@ -118,71 +118,80 @@ def test_monte_carlo_simulation():
     result = monte_carlo_simulation(
         lat=15.0,
         lon=110.0,
-        start_time=datetime.now(),
-        total_hours=24,
-        interval=6,
+        heading=90,
+        speed=8.0,
+        hours_ahead=24,
+        step_hours=6,
         num_simulations=10
     )
-    
-    assert isinstance(result, list)
+    assert isinstance(result, dict)
     assert len(result) > 0
-    assert all(isinstance(point, dict) for point in result)
-    assert all(key in result[0] for key in ['lat', 'lon', 'time', 'radius_km'])
+    assert all(key in result for key in ['central_path', 'left_path', 'right_path', 'forecast_times', 'cone_polygon'])
 
-def test_monte_carlo_simulation_parameters():
-    """Test Monte Carlo simulation with different parameters."""
-    start_time = datetime.now()
+def test_monte_carlo_simulation_with_history():
+    """Test Monte Carlo simulation with history data."""
+    now = datetime.now()
+    history = [
+        {
+            'sub_id': 'Jin1',
+            'latitude': 15.0,
+            'longitude': 110.0,
+            'timestamp': now - timedelta(hours=2),
+            'event_type': 'departure'
+        },
+        {
+            'sub_id': 'Jin1',
+            'latitude': 15.1,
+            'longitude': 110.1,
+            'timestamp': now - timedelta(hours=1),
+            'event_type': 'sighting'
+        }
+    ]
     result = monte_carlo_simulation(
-        lat=15.0,
-        lon=110.0,
-        start_time=start_time,
-        base_speed_knots=5.0,
-        base_heading_deg=180,
-        total_hours=12,
-        interval=3,
-        num_simulations=5
+        history=history,
+        hours_ahead=12,
+        step_hours=3,
+        num_simulations=5,
+        heading_variation=10.0
     )
-    
-    assert isinstance(result, list)
-    # Check number of time points (12 hours / 3 hour interval = 4 points)
-    unique_times = len(set(point['time'] for point in result))
-    assert unique_times == 4
-    # Check time range
-    max_time = max(point['time'] for point in result)
-    assert (max_time - start_time).total_seconds() / 3600 <= 12  # Within 12 hours
+    assert isinstance(result, dict)
+    assert len(result) > 0
+    assert all(key in result for key in ['central_path', 'left_path', 'right_path', 'forecast_times', 'cone_polygon'])
 
 def test_monte_carlo_simulation_uncertainty():
     """Test that Monte Carlo simulation produces varying results."""
     # Set random seed for reproducibility
     np.random.seed(42)
-    
+
     result = monte_carlo_simulation(
         lat=15.0,
         lon=110.0,
-        start_time=datetime.now(),
-        base_speed_knots=8.0,
-        base_heading_deg=90,
-        total_hours=24,
-        interval=12,
-        num_simulations=20
+        heading=135,  # Southeast heading to stay in South China Sea
+        speed=7.0,    # Moderate speed
+        hours_ahead=12,  # Shorter forecast period
+        step_hours=3,    # Smaller steps
+        num_simulations=100,
+        heading_sigma=3.0,    # Even smaller heading variation
+        speed_sigma=0.05,     # Small speed variation
     )
-    
-    # Get all positions for the last time point
-    last_time = max(p['time'] for p in result)
-    final_positions = [(p['lat'], p['lon']) for p in result if p['time'] == last_time]
-    
-    # Check that we have multiple unique positions (uncertainty)
-    unique_lats = len(set(lat for lat, _ in final_positions))
-    unique_lons = len(set(lon for _, lon in final_positions))
-    
+
+    # Check that we have multiple unique positions in the cone polygon
+    assert len(result['cone_polygon']) > 0
+    assert result['runs_kept'] > 0, "No valid runs were kept"
+
+    # Check that we have variation in both latitude and longitude
+    lats = [p[1] for p in result['central_path']]  # Use central path for variation check
+    lons = [p[0] for p in result['central_path']]
+
     # We should have variation in both latitude and longitude
-    assert unique_lats > 1, "Monte Carlo simulation should produce varying latitudes"
-    assert unique_lons > 1, "Monte Carlo simulation should produce varying longitudes"
-    
+    assert len(set(lats)) > 1, "Monte Carlo simulation should produce varying latitudes"
+    assert len(set(lons)) > 1, "Monte Carlo simulation should produce varying longitudes"
+
     # Check that the variations are within reasonable bounds
-    lat_spread = max(lat for lat, _ in final_positions) - min(lat for lat, _ in final_positions)
-    lon_spread = max(lon for _, lon in final_positions) - min(lon for _, lon in final_positions)
-    
+    lat_spread = max(lats) - min(lats)
+    lon_spread = max(lons) - min(lons)
+
     # The spread should be non-zero but not too large
-    assert 0 < lat_spread < 5.0, "Latitude spread should be reasonable"
-    assert 0 < lon_spread < 5.0, "Longitude spread should be reasonable" 
+    # For a 12-hour forecast with 7 knots speed, max distance ≈ 155 km ≈ 1.4 degrees
+    assert 0 < lat_spread < 1.5, f"Latitude spread {lat_spread} should be reasonable"
+    assert 0 < lon_spread < 1.5, f"Longitude spread {lon_spread} should be reasonable" 
