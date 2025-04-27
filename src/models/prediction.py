@@ -1,3 +1,4 @@
+from __future__ import annotations
 import pandas as pd
 import math
 import numpy as np
@@ -10,6 +11,7 @@ from src.utils.geo_utils import (
     move_point,
     calculate_current_drift,
 )
+from src.models.submarine import Submarine, build_submarines_with_bases_and_locations
 import random
 
 # Earth's radius in kilometers (for distance/bearing calculations)
@@ -19,6 +21,23 @@ EARTH_RADIUS_KM = 6371.0
 MIN_SPEED_KNOTS = 5.0  # Minimum patrol speed
 MAX_SPEED_KNOTS = 10.0  # Maximum patrol speed
 KNOTS_TO_KMH = 1.852  # Conversion factor from knots to km/h
+
+# Load submarine bases data (global, so only loaded once)
+BASES_CSV_PATH = "data/input/submarine_bases.csv"
+try:
+    _bases_df = pd.read_csv(BASES_CSV_PATH)
+    BASES_DICT = {row['id']: row for _, row in _bases_df.iterrows()}
+except Exception:
+    BASES_DICT = {}
+
+# Map submarine IDs to their home base ID (Yulin for Jin1-4)
+SUB_HOME_BASE = {
+    "Jin1": 1,
+    "Jin2": 1,
+    "Jin3": 1,
+    "Jin4": 1,
+    # Add more mappings as needed
+}
 
 # ────────────────────────────────────────────────────────────────────
 #  Ultra-light Ocean / Bathymetry model (≈2 km resolution mask)
@@ -35,24 +54,79 @@ _bathy  = np.full((_Ny, _Nx), True, dtype=bool)  # True  = water&deep
 # mainland CN
 _bathy[(np.s_[:], np.s_[:])]  # placeholder; fill from raster in prod
 
-# quick mask so the demo runs:
-def _is_water(lat, lon):
-    """Check if a point is in deep water (>150m).
-    For testing, we'll consider the South China Sea area as water
-    except for major landmasses."""
-    # Special case for tests - consider test area as water
-    if 14.0 <= lat <= 16.0 and 109.0 <= lon <= 111.0:
+# ---------------------------------------------------------------------
+#  Simplified bathymetry/land mask for China-centric Monte-Carlo
+#    – Returns True  => point is deep enough water for an SSBN
+#    – Returns False => point is on land or inside <100 m shelf
+#
+#  Rules (tuned for realism yet lenient enough for simulation):
+#  1. Hard land masks using generous coastal buffers (≈25 km ≈0.22°).
+#  2. Yellow-Sea & Taiwan-Strait shallows (<100 m) blocked out
+#     except for two "shipping lanes" wide enough to let subs pass.
+#  3. Everything south of 21° N in the South China Sea is treated
+#     as deep water – the basin is >1000 m almost everywhere.
+# ---------------------------------------------------------------------
+
+def _box(lat, lon, lat_min, lat_max, lon_min, lon_max) -> bool:
+    return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max
+
+_COAST_BUF = 0.22    # ≈25 km
+
+def _is_water(lat: float, lon: float) -> bool:
+    lat, lon = float(lat), float(lon)
+
+    # 1. Mainland China + Hainan + Vietnam + Philippines + Taiwan
+    # -----------------------------------------------------------
+    # Each region gets a bounding box grown by _COAST_BUF
+
+    # Mainland coast (rough) – Qingdao down to Guangxi
+    if _box(lat, lon, 20 - _COAST_BUF, 45 + _COAST_BUF,
+                     100 - _COAST_BUF, 123 + _COAST_BUF):
+        return False
+
+    # Hainan Island
+    if _box(lat, lon, 18 - _COAST_BUF, 20 + _COAST_BUF,
+                     108.5 - _COAST_BUF, 111 + _COAST_BUF):
+        return False
+
+    # Vietnam coast
+    if _box(lat, lon,  8 - _COAST_BUF, 23 + _COAST_BUF,
+                     102 - _COAST_BUF, 110 + _COAST_BUF):
+        return False
+
+    # Philippine archipelago
+    if _box(lat, lon,  5 - _COAST_BUF, 19 + _COAST_BUF,
+                     117 - _COAST_BUF, 127 + _COAST_BUF):
+        return False
+
+    # Taiwan
+    if _box(lat, lon, 21 - _COAST_BUF, 26 + _COAST_BUF,
+                     119 - _COAST_BUF, 123 + _COAST_BUF):
+        return False
+
+    # 2. Shallow basins we want to forbid (<100 m depth)
+    # -------------------------------------------------
+    #   • Yellow Sea north of 33 N is mostly <60 m
+    #   • Taiwan Strait (shallow but we allow two corridors)
+
+    # Yellow Sea / Bohai shallows (with one deep-water "corridor" east of 124 E)
+    if lat > 33 and _box(lat, lon, 33, 41, 118, 124):
+        if lon < 123:          # block most shallows
+            return False
+
+    # Taiwan Strait – forbid except a ~50 km-wide central channel
+    if _box(lat, lon, 22, 25, 118, 122):
+        if not (lon > 120.3 and lon < 120.8):
+            return False
+
+    # 3. Everything south of 21 N (South China Sea basin) = deep water
+    # ---------------------------------------------------------------
+    if lat < 21:
         return True
-        
-    # South China Sea deep water
-    if 5.0 <= lat <= 20.0 and 109.0 <= lon <= 120.0:
-        return True
-        
-    return not ((100 < lon < 123 and 20 < lat < 45) or            # CN
-                (102 < lon < 110 and  8 < lat < 23) or            # VN
-                (108.5 < lon < 111 and 18 < lat < 20) or          # Hainan
-                (117 < lon < 127 and  5 < lat < 19) or            # PH
-                (119 < lon < 123 and 21 < lat < 26))              # TW
+
+    # 4. Otherwise treat as water (western Pacific etc.)
+    # -------------------------------------------------
+    return True
 
 # ────────────────────────────────────────────────────────────────────
 #  Vectorised, per-step stochastic Monte-Carlo
@@ -351,7 +425,7 @@ def forecast_path(
     }
 
 def forecast_all_subs(
-    data: Union[List[Dict[str, Any]], pd.DataFrame],
+    data: Union[List[Dict[str, Any]], pd.DataFrame, Dict[str, Submarine]],
     hours_ahead: int = 24,
     step_hours: int = 1,
     heading_variation: float = 15.0,
@@ -360,8 +434,8 @@ def forecast_all_subs(
     
     Parameters
     ----------
-    data : Union[List[Dict[str, Any]], pd.DataFrame]
-        List of submarine position records or a pandas DataFrame.
+    data : Union[List[Dict[str, Any]], pd.DataFrame, Dict[str, Submarine]]
+        List of submarine position records, a pandas DataFrame, or a dictionary of Submarine objects.
         Each record should contain at least 'latitude' and 'longitude'.
         Must have an identifier field ('id', 'submarine_id', or 'name').
     hours_ahead : int, default 24
@@ -382,36 +456,70 @@ def forecast_all_subs(
     ValueError
         If data cannot be converted to a list of dictionaries.
     """
-    # Accept either a list of dicts or a DataFrame
-    if not isinstance(data, list):
-        try:
-            data = data.to_dict("records")
-        except Exception as e:
-            raise ValueError(f"Data must be a list of dicts or a pandas DataFrame: {e}")
+    # Handle different input types
+    if isinstance(data, dict) and all(isinstance(v, Submarine) for v in data.values()):
+        # Already have Submarine objects, extract histories
+        history_by_sub = {sub_id: sub.history for sub_id, sub in data.items()}
+    else:
+        # Convert to list of dicts if needed
+        if not isinstance(data, list):
+            try:
+                data = data.to_dict("records")
+            except Exception as e:
+                raise ValueError(f"Data must be a list of dicts, DataFrame, or dict of Submarine objects: {e}")
 
-    # Group records by submarine ID
-    history_by_sub: Dict[Any, List[Dict[str, Any]]] = {}
-    for record in data:
-        sub_id = record.get("id") or record.get("submarine_id") or record.get("name")
-        if sub_id is None:
-            continue
-        history_by_sub.setdefault(sub_id, []).append(record)
+        # Group records by submarine ID
+        history_by_sub: Dict[Any, List[Dict[str, Any]]] = {}
+        for record in data:
+            sub_id = record.get("id") or record.get("submarine_id") or record.get("name") or record.get("sub_id")
+            if sub_id is None:
+                continue
+            history_by_sub.setdefault(sub_id, []).append(record)
 
-    # Sort each sub's history by timestamp if available
-    for records in history_by_sub.values():
-        records.sort(key=lambda x: x.get("timestamp", 0))
+        # Sort each sub's history by timestamp if available
+        for records in history_by_sub.values():
+            records.sort(key=lambda x: x.get("timestamp", 0))
 
-    # Run forecast for each submarine
-    return {
-        sub_id: monte_carlo_simulation(
-            history=records,
-            hours_ahead=hours_ahead,
-            step_hours=step_hours,
-            heading_sigma=heading_variation/3,  # Convert max variation to sigma
-            num_simulations=1000
-        )
-        for sub_id, records in history_by_sub.items()
-    }
+    # Ensure all home-based subs are included, even if no history
+    all_sub_ids = set(history_by_sub.keys()) | set(SUB_HOME_BASE.keys())
+    results = {}
+    for sub_id in all_sub_ids:
+        records = history_by_sub.get(sub_id, [])
+        if len(records) < 2:
+            # Use base as fallback origin if mapped
+            base_id = SUB_HOME_BASE.get(sub_id)
+            base = BASES_DICT.get(base_id)
+            if base is not None:
+                forecast = monte_carlo_simulation(
+                    lat=base['latitude'],
+                    lon=base['longitude'],
+                    heading=0,  # Default heading (could be randomized or improved)
+                    speed=MIN_SPEED_KNOTS,  # Default speed
+                    hours_ahead=hours_ahead,
+                    step_hours=step_hours,
+                    num_simulations=1000,
+                    heading_sigma=heading_variation/3
+                )
+            else:
+                # No base info, return empty or default
+                forecast = {
+                    "central_path": [],
+                    "left_path": [],
+                    "right_path": [],
+                    "forecast_times": [],
+                    "cone_polygon": [],
+                    "runs_kept": 0
+                }
+        else:
+            forecast = monte_carlo_simulation(
+                history=records,
+                hours_ahead=hours_ahead,
+                step_hours=step_hours,
+                heading_sigma=heading_variation/3,  # Convert max variation to sigma
+                num_simulations=1000
+            )
+        results[sub_id] = forecast
+    return results
 
 ######################### Monte‑Carlo module #########################
 
